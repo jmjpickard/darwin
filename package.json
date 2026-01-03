@@ -1,0 +1,21 @@
+{
+  "name": "darwin",
+  "version": "0.1.0",
+  "description": "Local home intelligence system powered by FunctionGemma and Gemma 3 1B",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/cli/start.ts",
+    "test:brain": "tsx src/cli/test-brain.ts",
+    "test:health": "tsx src/cli/health-check.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
