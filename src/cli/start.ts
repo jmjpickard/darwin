@@ -128,8 +128,8 @@ async function main(): Promise<void> {
 
     console.log('\nDarwin is running. Press Ctrl+C to stop.\n');
 
-    // Keep the process alive
-    await new Promise(() => {});
+    // Keep the process alive with an interval
+    setInterval(() => {}, 1 << 30); // ~12 days, effectively forever
   } catch (error) {
     console.error('Failed to start Darwin:', error);
     process.exit(1);

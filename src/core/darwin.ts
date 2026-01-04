@@ -209,7 +209,7 @@ export { Darwin as Homebase };
 
 // Re-export for convenience
 export { DarwinBrain, DarwinModule, eventBus, Logger };
-export type { BaseModuleConfig as ModuleConfig } from './module.js';
+export type { ModuleConfig } from './module.js';
 export type { Tool, ToolCall } from './brain.js';
 export type { ModuleStatus } from './module.js';
 export type { DarwinEvent } from './event-bus.js';
