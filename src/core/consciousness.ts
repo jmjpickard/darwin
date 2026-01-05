@@ -248,7 +248,7 @@ Respond with a brief assessment and recommended action.`;
 
     try {
       const response = await this.brain.reason(prompt, { maxTokens: 200 });
-      this.monologue.reason(response.slice(0, 150));
+      this.monologue.reason(response.slice(0, 500));
 
       // For now, let the brain's response inform via monologue
       // TODO: Parse response for actual actions

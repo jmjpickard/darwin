@@ -341,85 +341,76 @@ Respond with ONLY a valid JSON object matching this schema:
       content: userMessage,
     });
 
-    // Trim history if too long
-    while (this.conversationHistory.length > this.maxHistoryLength) {
-      this.conversationHistory.shift();
-    }
+    this.trimHistory();
 
     this.logger.debug(`Chat: ${userMessage.slice(0, 100)}...`);
 
     try {
-      // Build messages array with system prompt and history
       const messages: ChatMessage[] = [
         { role: 'system', content: this.systemPrompt },
         ...this.conversationHistory,
       ];
 
-      const data = await this.requestChatCompletion(messages, {
-        tools: this.tools.length > 0 ? this.tools : undefined,
-      });
-      const assistantMessage = data.message;
+      const toolResults: Array<{ tool: string; result?: unknown; error?: string }> = [];
+      const maxToolRounds = 3;
 
-      // Execute any tool calls
-      let toolResults: ChatResponse['toolResults'];
-      if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
-        toolResults = [];
+      for (let round = 0; round < maxToolRounds; round++) {
+        const data = await this.requestChatCompletion(messages, {
+          tools: this.tools.length > 0 ? this.tools : undefined,
+        });
+        const assistantMessage = data.message;
+        const toolCalls = assistantMessage.tool_calls || [];
+
+        const assistantEntry: ChatMessage = {
+          role: 'assistant',
+          content: assistantMessage.content || '',
+          tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+        };
+
+        this.conversationHistory.push(assistantEntry);
+        messages.push(assistantEntry);
+        this.trimHistory();
+
+        if (toolCalls.length === 0) {
+          const responseText = assistantMessage.content || "I'm not sure how to help with that.";
+          return {
+            message: responseText,
+            toolResults: toolResults.length > 0 ? toolResults : undefined,
+            isQuestion: this.detectQuestion(responseText),
+          };
+        }
+
         const toolResultMessages: ChatMessage[] = [];
-
-        for (const call of assistantMessage.tool_calls) {
+        for (const call of toolCalls) {
           const result = await this.executeToolWithRecovery(
             call.function.name,
             call.function.arguments,
             userMessage
           );
           toolResults.push(result);
+
           const toolContent = result.error
             ? `Tool ${result.tool} failed: ${result.error}`
             : `Tool ${result.tool} returned: ${JSON.stringify(result.result, null, 2)}`;
-          toolResultMessages.push({
+
+          const toolMessage: ChatMessage = {
             role: 'tool',
             content: toolContent,
-            tool_call_id: call.id,
-          });
+          };
+          if (call.id) {
+            toolMessage.tool_call_id = call.id;
+          }
+          toolResultMessages.push(toolMessage);
         }
 
-        // Add tool results to history
-        this.conversationHistory.push({
-          role: 'assistant',
-          content: assistantMessage.content || '',
-          tool_calls: assistantMessage.tool_calls,
-        });
-
         this.conversationHistory.push(...toolResultMessages);
-
-        // Get a conversational response about the results
-        const followUp = await this.generateResponse(
-          `Based on the tool results above, give a brief conversational response to the user. Be concise and natural.`
-        );
-
-        this.conversationHistory.push({
-          role: 'assistant',
-          content: followUp,
-        });
-
-        return {
-          message: followUp,
-          toolResults,
-          isQuestion: this.detectQuestion(followUp),
-        };
+        messages.push(...toolResultMessages);
+        this.trimHistory();
       }
 
-      // No tool calls - just a conversational response
-      const responseText = assistantMessage.content || "I'm not sure how to help with that.";
-
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: responseText,
-      });
-
       return {
-        message: responseText,
-        isQuestion: this.detectQuestion(responseText),
+        message: 'I hit the tool call limit while working on that. Try again or rephrase?',
+        toolResults: toolResults.length > 0 ? toolResults : undefined,
       };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
@@ -429,20 +420,6 @@ Respond with ONLY a valid JSON object matching this schema:
       this.logger.error('Chat failed:', error);
       return { message: `Sorry, something went wrong: ${error}` };
     }
-  }
-
-  /**
-   * Generate a plain text response (no tools)
-   */
-  private async generateResponse(prompt: string): Promise<string> {
-    const messages: ChatMessage[] = [
-      { role: 'system', content: this.systemPrompt },
-      ...this.conversationHistory,
-      { role: 'user', content: prompt },
-    ];
-
-    const data = await this.requestChatCompletion(messages);
-    return data.message.content || '';
   }
 
   /**
@@ -459,6 +436,15 @@ Respond with ONLY a valid JSON object matching this schema:
    */
   clearHistory(): void {
     this.conversationHistory = [];
+  }
+
+  /**
+   * Trim conversation history to max length
+   */
+  private trimHistory(): void {
+    while (this.conversationHistory.length > this.maxHistoryLength) {
+      this.conversationHistory.shift();
+    }
   }
 
   /**
