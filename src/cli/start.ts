@@ -3,18 +3,19 @@
  * Darwin CLI - Main entry point
  *
  * Usage:
- *   npm run start
- *   npm run start -- --repo /path/to/project
- *   npm run start -- --auto --log debug
+ *   npm run start              # Interactive REPL mode
+ *   npm run start -- --auto    # Headless daemon mode
+ *   npm run start -- --config /path/to/config.json
  */
 
 import { Darwin } from '../core/darwin.js';
 import { CodeAgentModule } from '../modules/code-agent.js';
 import { HomeAutomationModule } from '../modules/home-automation.js';
 import { LogLevel } from '../core/logger.js';
+import { loadConfig, getConfigPath, getEnabledRepos, DarwinUserConfig } from '../core/config.js';
 
 interface CliArgs {
-  repo: string;
+  config?: string;
   auto: boolean;
   log: LogLevel;
   help: boolean;
@@ -22,7 +23,6 @@ interface CliArgs {
 
 function parseArgs(): CliArgs {
   const args: CliArgs = {
-    repo: process.cwd(),
     auto: false,
     log: 'info',
     help: false,
@@ -31,8 +31,8 @@ function parseArgs(): CliArgs {
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--repo' && argv[i + 1]) {
-      args.repo = argv[++i];
+    if (arg === '--config' && argv[i + 1]) {
+      args.config = argv[++i];
     } else if (arg === '--auto') {
       args.auto = true;
     } else if (arg === '--log' && argv[i + 1]) {
@@ -54,7 +54,7 @@ function printBanner(): void {
  |____/ \\__,_|_|    \\_/\\_/ |_|_| |_|
 
   Local Home Intelligence System
-  Powered by FunctionGemma + Gemma 3 1B
+  Powered by Qwen2.5 3B
 `);
 }
 
@@ -63,15 +63,32 @@ function printHelp(): void {
 Usage: npm run start -- [options]
 
 Options:
-  --repo <path>    Path to code repository (default: current directory)
-  --auto           Automatically start Code Agent tasks when capacity available
+  --config <path>  Path to config file (default: ~/.darwin/config.json)
+  --auto           Headless mode: auto-start tasks, no interactive prompt
   --log <level>    Log level: debug, info, warn, error (default: info)
   --help, -h       Show this help message
 
+Modes:
+  Interactive (default): Chat with Darwin, manage tasks, attach to sessions
+  Headless (--auto):     Daemon mode, auto-works through task queue
+
+Config file (${getConfigPath()}):
+  {
+    "repos": [
+      { "path": "/path/to/project", "name": "my-project", "enabled": true }
+    ],
+    "defaults": {
+      "testCommand": "npm test",
+      "checkIntervalMs": 300000,
+      "maxSessionMinutes": 30,
+      "usageThreshold": 80
+    }
+  }
+
 Examples:
-  npm run start
-  npm run start -- --repo /path/to/project --auto
-  npm run start -- --log debug
+  npm run start                    # Interactive mode
+  npm run start -- --auto          # Headless daemon
+  npm run start -- --log debug     # Debug logging
 `);
 }
 
@@ -86,15 +103,28 @@ async function main(): Promise<void> {
 
   printBanner();
 
+  // Load config
+  const userConfig = await loadConfig(args.config);
+  const enabledRepos = getEnabledRepos(userConfig);
+
+  if (enabledRepos.length === 0) {
+    console.log('No enabled repositories configured.');
+    console.log(`Edit ${getConfigPath()} to add repositories.\n`);
+  } else {
+    console.log(`Configured repos: ${enabledRepos.map((r) => r.name).join(', ')}\n`);
+  }
+
   const darwin = new Darwin({
     logLevel: args.log,
+    userConfig,
   });
 
   darwin
     .use(CodeAgentModule, {
-      enabled: true,
-      repoPath: args.repo,
+      enabled: enabledRepos.length > 0,
+      repos: enabledRepos,
       autoStart: args.auto,
+      defaults: userConfig.defaults,
     })
     .use(HomeAutomationModule, {
       enabled: true,
@@ -126,10 +156,15 @@ async function main(): Promise<void> {
       console.log(`  - ${tool}`);
     }
 
-    console.log('\nDarwin is running. Press Ctrl+C to stop.\n');
-
-    // Keep the process alive with an interval
-    setInterval(() => {}, 1 << 30); // ~12 days, effectively forever
+    if (args.auto) {
+      // Headless daemon mode
+      console.log('\nDarwin running in headless mode. Press Ctrl+C to stop.\n');
+      setInterval(() => {}, 1 << 30);
+    } else {
+      // Interactive REPL mode
+      const { startRepl } = await import('./repl.js');
+      await startRepl(darwin);
+    }
   } catch (error) {
     console.error('Failed to start Darwin:', error);
     process.exit(1);

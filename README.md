@@ -197,6 +197,27 @@ Motion sensor -> Event Bus -> FunctionGemma
 ```bash
 OLLAMA_URL=http://localhost:11434   # Ollama API URL
 LOG_LEVEL=info                      # debug, info, warn, error
+DARWIN_TERMINAL_BACKEND=proxy       # proxy or pty
+DARWIN_TERMINAL_PROXY_SOCKET=~/.darwin/terminald.sock
+DARWIN_TERMINAL_PROXY_TOKEN=        # optional shared token
+DARWIN_TERMINAL_PROXY_TIMEOUT_MS=5000
+DARWIN_TERMINAL_PROXY_SANITIZE_ENV=0  # set to 0 to keep DYLD_/LD_* vars
+DARWIN_TERMINAL_PROXY_MINIMAL_ENV=0   # set to 0 to skip minimal-env retry
+```
+
+### Terminal Proxy (Sandboxed Environments)
+
+If you need Darwin to control a PTY from inside a sandboxed environment
+(e.g. Claude Code/Codex), run the proxy daemon outside the sandbox and
+point Darwin at its socket:
+
+```bash
+# Outside the sandbox
+npm run terminald
+
+# Inside the sandbox
+export DARWIN_TERMINAL_BACKEND=proxy
+npm run start
 ```
 
 ### Module Config

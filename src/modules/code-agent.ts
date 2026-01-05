@@ -1,29 +1,37 @@
 /**
  * Code Agent Module - Orchestrates Claude Code with Beads task management
  *
+ * Uses PTY-based TerminalController for true interactive Claude Code sessions.
+ * Gemma/Brain handles question answering when Claude asks for input.
+ *
  * Registers tools:
- * - code_get_ready_tasks: Get tasks ready to work on
+ * - code_get_ready_tasks: Get tasks ready to work on across all repos
  * - code_start_task: Start Claude working on a task
  * - code_get_status: Get current agent status
  * - code_stop_task: Stop current task
+ * - code_add_task: Create a new Beads task
+ * - code_list_repos: List configured repositories
  */
 
-import { spawn, ChildProcess } from 'child_process';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import * as readline from 'readline';
 import { DarwinModule, ModuleConfig } from '../core/module.js';
 import { DarwinBrain } from '../core/brain.js';
 import { eventBus } from '../core/event-bus.js';
+import { RepoConfig } from '../core/config.js';
+import { TerminalController } from '../core/terminal-controller.js';
+import { TerminalState } from '../core/terminal-types.js';
 
 const execAsync = promisify(exec);
 
 interface CodeAgentConfig extends ModuleConfig {
-  repoPath: string;
-  checkIntervalMs: number;
-  maxSessionMinutes: number;
-  usageThreshold: number;
-  testCommand: string;
+  repos: RepoConfig[];
+  defaults: {
+    testCommand: string;
+    checkIntervalMs: number;
+    maxSessionMinutes: number;
+    usageThreshold: number;
+  };
   autoStart: boolean;
 }
 
@@ -36,20 +44,33 @@ interface BeadTask {
   type: string;
 }
 
+interface QueuedTask {
+  task: BeadTask;
+  repo: RepoConfig;
+}
+
 interface ClaudeSession {
   taskId: string;
-  claudeProcess: ChildProcess;
+  repo: RepoConfig;
+  terminal: TerminalController;
   startedAt: Date;
   outputBuffer: string[];
+  branchName: string;
+  task: BeadTask;
 }
+
+type OutputHandler = (line: string) => void;
+type SessionEndReason = 'limit' | 'stopped' | 'timeout' | 'start_error';
 
 const DEFAULT_CONFIG: CodeAgentConfig = {
   enabled: true,
-  repoPath: process.cwd(),
-  checkIntervalMs: 5 * 60 * 1000,
-  maxSessionMinutes: 30,
-  usageThreshold: 80,
-  testCommand: 'npm test',
+  repos: [],
+  defaults: {
+    testCommand: 'npm test',
+    checkIntervalMs: 5 * 60 * 1000,
+    maxSessionMinutes: 30,
+    usageThreshold: 80,
+  },
   autoStart: false,
 };
 
@@ -61,6 +82,12 @@ export class CodeAgentModule extends DarwinModule {
   private currentSession: ClaudeSession | null = null;
   private checkInterval: NodeJS.Timeout | null = null;
   private sessionTimeout: NodeJS.Timeout | null = null;
+  private outputHandlers: Set<OutputHandler> = new Set();
+  private pauseCheckFn: (() => boolean) | null = null;
+  private limitUntil: Date | null = null;
+  private limitTimer: NodeJS.Timeout | null = null;
+  private limitResumeTask: { taskId: string; repoName?: string } | null = null;
+  private sessionEndReason: SessionEndReason | null = null;
 
   constructor(brain: DarwinBrain, config: ModuleConfig) {
     super(brain, config);
@@ -68,7 +95,8 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   async init(): Promise<void> {
-    this.logger.info(`Repository: ${this.config.repoPath}`);
+    const repoNames = this.config.repos.map((r) => r.name).join(', ');
+    this.logger.info(`Repositories: ${repoNames || 'none'}`);
 
     // Register tools with Brain
     this.registerTools();
@@ -79,11 +107,13 @@ export class CodeAgentModule extends DarwinModule {
   async start(): Promise<void> {
     this._enabled = true;
 
-    if (this.config.autoStart) {
+    if (this.config.autoStart && this.config.repos.length > 0) {
       this.startCheckLoop();
     }
 
-    eventBus.publish('code', 'module_started', { repoPath: this.config.repoPath });
+    eventBus.publish('code', 'module_started', {
+      repos: this.config.repos.map((r) => r.name),
+    });
   }
 
   async stop(): Promise<void> {
@@ -94,27 +124,69 @@ export class CodeAgentModule extends DarwinModule {
       this.checkInterval = null;
     }
 
+    if (this.limitTimer) {
+      clearTimeout(this.limitTimer);
+      this.limitTimer = null;
+    }
+
     if (this.currentSession) {
-      await this.stopCurrentSession();
+      await this.stopCurrentSession('Module stopping', 'stopped');
     }
 
     eventBus.publish('code', 'module_stopped', {});
   }
 
+  /**
+   * Set pause check function (called by Darwin)
+   */
+  setPauseCheck(fn: () => boolean): void {
+    this.pauseCheckFn = fn;
+  }
+
+  /**
+   * Subscribe to live output from Claude session
+   */
+  onOutput(handler: OutputHandler): void {
+    this.outputHandlers.add(handler);
+  }
+
+  /**
+   * Unsubscribe from output
+   */
+  offOutput(handler: OutputHandler): void {
+    this.outputHandlers.delete(handler);
+  }
+
+  /**
+   * Get current session info (for attach)
+   */
+  getCurrentSession(): ClaudeSession | null {
+    return this.currentSession;
+  }
+
+  /**
+   * Get recent output buffer
+   */
+  getOutputBuffer(): string[] {
+    return this.currentSession?.outputBuffer.slice(-100) || [];
+  }
+
   private registerTools(): void {
-    // Get ready tasks from Beads
+    // Get ready tasks from all repos
     this.registerTool(
       'code_get_ready_tasks',
-      'Get list of tasks ready to work on from Beads',
+      'Get list of tasks ready to work on from all configured repos',
       {
         type: 'object',
         properties: {
           limit: { type: 'number', description: 'Max tasks to return' },
+          repo: { type: 'string', description: 'Filter by repo name (optional)' },
         },
       },
       async (args) => {
-        const limit = (args.limit as number) || 5;
-        return this.getReadyTasks(limit);
+        const limit = (args.limit as number) || 10;
+        const repoFilter = args.repo as string | undefined;
+        return this.getReadyTasks(limit, repoFilter);
       }
     );
 
@@ -126,12 +198,14 @@ export class CodeAgentModule extends DarwinModule {
         type: 'object',
         properties: {
           taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
+          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
         },
         required: ['taskId'],
       },
       async (args) => {
         const taskId = args.taskId as string;
-        return this.startTask(taskId);
+        const repoName = args.repo as string | undefined;
+        return this.startTask(taskId, repoName);
       }
     );
 
@@ -172,6 +246,38 @@ export class CodeAgentModule extends DarwinModule {
       },
       async () => this.checkClaudeCapacity()
     );
+
+    // Add a task to a repo
+    this.registerTool(
+      'code_add_task',
+      'Create a new Beads task in a repository',
+      {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Repo name' },
+          title: { type: 'string', description: 'Task title' },
+          type: {
+            type: 'string',
+            enum: ['task', 'bug', 'epic'],
+            description: 'Task type',
+          },
+          priority: { type: 'number', description: 'Priority (1-5, lower is higher)' },
+        },
+        required: ['repo', 'title'],
+      },
+      async (args) => this.addTask(args as { repo: string; title: string; type?: string; priority?: number })
+    );
+
+    // List repos
+    this.registerTool(
+      'code_list_repos',
+      'List configured repositories',
+      {
+        type: 'object',
+        properties: {},
+      },
+      async () => this.listRepos()
+    );
   }
 
   /**
@@ -180,7 +286,7 @@ export class CodeAgentModule extends DarwinModule {
   private startCheckLoop(): void {
     this.checkInterval = setInterval(async () => {
       await this.checkAndExecute();
-    }, this.config.checkIntervalMs);
+    }, this.config.defaults.checkIntervalMs);
 
     // Also run immediately
     this.checkAndExecute();
@@ -190,13 +296,28 @@ export class CodeAgentModule extends DarwinModule {
    * Check capacity and start a task if available
    */
   private async checkAndExecute(): Promise<void> {
+    // Check if paused
+    if (this.pauseCheckFn?.()) {
+      this.logger.debug('Darwin paused - skipping task check');
+      return;
+    }
+
     if (this.currentSession) {
       this.logger.debug('Session already active');
       return;
     }
 
+    if (this.isLimitActive()) {
+      this.logger.debug(`Claude limit active until ${this.limitUntil?.toISOString()}`);
+      return;
+    }
+
     const capacity = await this.checkClaudeCapacity();
     if (!capacity.available) {
+      if (capacity.resetsAt) {
+        const parsed = new Date(capacity.resetsAt);
+        this.applyLimitCooldown(Number.isFinite(parsed.getTime()) ? parsed : undefined, 'api');
+      }
       this.logger.debug(`Claude at ${capacity.utilization}% - waiting`);
       return;
     }
@@ -207,151 +328,325 @@ export class CodeAgentModule extends DarwinModule {
       return;
     }
 
-    await this.startTask(tasks[0].id);
+    const { task, repo } = tasks[0];
+    await this.startTask(task.id, repo.name);
   }
 
   /**
-   * Get ready tasks from Beads
+   * Get ready tasks from all repos, sorted by priority
    */
-  private async getReadyTasks(limit: number): Promise<BeadTask[]> {
-    try {
-      const { stdout } = await execAsync('bd ready --json', {
-        cwd: this.config.repoPath,
-      });
-      const result = JSON.parse(stdout);
-      return (result.issues || []).slice(0, limit);
-    } catch (error) {
-      this.logger.error('Failed to get ready tasks:', error);
-      return [];
+  private async getReadyTasks(limit: number, repoFilter?: string): Promise<QueuedTask[]> {
+    const allTasks: QueuedTask[] = [];
+
+    const repos = repoFilter
+      ? this.config.repos.filter((r) => r.name === repoFilter)
+      : this.config.repos;
+
+    for (const repo of repos) {
+      if (!repo.enabled) continue;
+
+      try {
+        const { stdout } = await execAsync('bd ready --json', {
+          cwd: repo.path,
+        });
+        const result = JSON.parse(stdout);
+        // bd ready --json returns an array directly, not { issues: [...] }
+        const tasks = (Array.isArray(result) ? result : result.issues || []) as BeadTask[];
+        allTasks.push(...tasks.map((task) => ({ task, repo })));
+      } catch (error) {
+        this.logger.debug(`No tasks from ${repo.name}: ${error}`);
+      }
     }
+
+    // Sort by priority (lower number = higher priority)
+    allTasks.sort((a, b) => a.task.priority - b.task.priority);
+
+    return allTasks.slice(0, limit);
   }
 
   /**
-   * Start Claude working on a task
+   * Find repo by name or find the repo containing a task
    */
-  private async startTask(taskId: string): Promise<{ success: boolean; message: string }> {
+  private async findRepo(taskId: string, repoName?: string): Promise<RepoConfig | null> {
+    // If repoName provided and matches a configured repo, use it
+    if (repoName) {
+      const exactMatch = this.config.repos.find((r) => r.name === repoName);
+      if (exactMatch) return exactMatch;
+      // repoName didn't match - fall through to search (model may have passed wrong value)
+    }
+
+    // Search all repos for this task
+    for (const repo of this.config.repos) {
+      try {
+        await execAsync(`bd show ${taskId} --json`, { cwd: repo.path });
+        return repo;
+      } catch {
+        // Task not in this repo
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Start Claude working on a task using PTY-based TerminalController
+   */
+  private async startTask(
+    taskId: string,
+    repoName?: string
+  ): Promise<{ success: boolean; message: string }> {
     if (this.currentSession) {
       return { success: false, message: 'Session already active' };
+    }
+
+    if (this.isLimitActive()) {
+      return {
+        success: false,
+        message: `Claude usage limit active until ${this.limitUntil?.toISOString()}`,
+      };
+    }
+
+    // Find the repo
+    const repo = await this.findRepo(taskId, repoName);
+    if (!repo) {
+      return { success: false, message: `Could not find repo for task ${taskId}` };
     }
 
     // Get task details
     let task: BeadTask;
     try {
       const { stdout } = await execAsync(`bd show ${taskId} --json`, {
-        cwd: this.config.repoPath,
+        cwd: repo.path,
       });
-      task = JSON.parse(stdout);
+      const result = JSON.parse(stdout);
+      // bd show --json returns an array with one element
+      task = Array.isArray(result) ? result[0] : result;
+      if (!task) {
+        return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
+      }
     } catch {
-      return { success: false, message: `Task ${taskId} not found` };
+      return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
     }
 
-    this.logger.info(`Starting task: ${taskId} - ${task.title}`);
+    this.logger.info(`Starting task: ${taskId} - ${task.title} (${repo.name})`);
+    this.sessionEndReason = null;
 
     // Create feature branch
-    const branchName = await this.createBranch(taskId, task.title);
+    const branchName = await this.createBranch(repo, taskId, task.title);
 
     // Update Beads status
-    await this.updateTaskStatus(taskId, 'in_progress');
+    await this.updateTaskStatus(repo, taskId, 'in_progress');
 
-    // Generate prompt
-    const prompt = await this.generatePrompt(task);
-
-    // Spawn Claude (fixed: renamed from 'process' to 'claudeProcess')
-    const claudeProcess = spawn('claude', ['--print', '-p', prompt], {
-      cwd: this.config.repoPath,
-      env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
-      stdio: ['pipe', 'pipe', 'pipe'],
+    // Create TerminalController for PTY-based interaction
+    const terminal = new TerminalController({
+      cwd: repo.path,
+      cols: 120,
+      rows: 40,
+      env: {
+        NO_COLOR: '1',
+        TERM: 'xterm-256color',
+      },
     });
 
+    // Initialize session
     this.currentSession = {
       taskId,
-      claudeProcess,
+      repo,
+      terminal,
       startedAt: new Date(),
       outputBuffer: [],
+      branchName,
+      task,
     };
+
+    // Set up event handlers
+    this.setupTerminalHandlers(terminal, task, repo);
 
     // Set session timeout
     this.sessionTimeout = setTimeout(() => {
       this.logger.warn(`Session timeout for ${taskId}`);
-      this.stopCurrentSession('Timeout');
-    }, this.config.maxSessionMinutes * 60 * 1000);
+      this.stopCurrentSession('Timeout', 'timeout');
+    }, this.config.defaults.maxSessionMinutes * 60 * 1000);
 
-    // Handle output
-    this.setupOutputHandlers(task);
+    try {
+      // Start Claude Code in REPL mode
+      await terminal.startClaude();
 
-    eventBus.publish('code', 'task_started', { taskId, title: task.title, branch: branchName });
+      // Wait for Claude to be ready
+      this.logger.info('Waiting for Claude prompt...');
+      const ready = await terminal.waitForState(['ready', 'limit_reached', 'error'], 30000);
 
-    return { success: true, message: `Started ${taskId} on branch ${branchName}` };
+      if (!ready.reached) {
+        this.logger.error('Claude did not reach ready state');
+        await this.stopCurrentSession('Failed to start', 'start_error');
+        return { success: false, message: 'Claude Code failed to start' };
+      }
+
+      if (ready.state === 'limit_reached') {
+        return { success: false, message: 'Claude usage limit reached, waiting for reset' };
+      }
+
+      if (ready.state === 'error') {
+        await this.stopCurrentSession('Terminal error', 'start_error');
+        return { success: false, message: 'Claude Code failed to start' };
+      }
+
+      this.logger.info('Claude is ready, sending task prompt...');
+
+      // Generate and send the task prompt
+      const prompt = await this.generatePrompt(repo, task);
+      await terminal.executeAction({ type: 'send', content: prompt });
+
+      eventBus.publish('code', 'task_started', {
+        taskId,
+        title: task.title,
+        repo: repo.name,
+        branch: branchName,
+      });
+
+      return { success: true, message: `Started ${taskId} on branch ${branchName} (${repo.name})` };
+    } catch (error) {
+      this.logger.error(`Failed to start Claude: ${error}`);
+      await this.stopCurrentSession('Start error', 'start_error');
+      return { success: false, message: `Failed to start Claude: ${error}` };
+    }
   }
 
   /**
-   * Set up stdout/stderr handlers for Claude process
+   * Set up event handlers for the TerminalController
    */
-  private setupOutputHandlers(task: BeadTask): void {
-    if (!this.currentSession) return;
+  private setupTerminalHandlers(terminal: TerminalController, task: BeadTask, repo: RepoConfig): void {
+    // Handle all output
+    terminal.on('output', (data) => {
+      this.currentSession?.outputBuffer.push(data);
+      this.touch();
 
-    const { claudeProcess } = this.currentSession;
+      // Notify subscribers
+      for (const handler of this.outputHandlers) {
+        handler(data);
+      }
+    });
 
-    if (claudeProcess.stdout) {
-      const rl = readline.createInterface({ input: claudeProcess.stdout });
-      rl.on('line', async (line) => {
-        this.currentSession?.outputBuffer.push(line);
-        this.touch();
+    // Handle state changes
+    terminal.on('stateChange', (from, to) => {
+      this.logger.debug(`Claude state: ${from} -> ${to}`);
 
-        // Detect questions
-        if (this.isQuestion(line)) {
-          const answer = await this.handleQuestion(line, task);
-          claudeProcess.stdin?.write(answer + '\n');
-        }
+      if (to === 'ready' && from === 'processing') {
+        // Claude finished processing and is waiting for input
+        // This could mean the task is done or Claude is waiting for more input
+        this.checkTaskCompletion(task, repo);
+      }
+    });
+
+    // Handle questions from Claude
+    terminal.on('question', async (question) => {
+      this.logger.info(`Claude asks: ${question}`);
+
+      eventBus.publish('code', 'question', {
+        taskId: this.currentSession?.taskId,
+        question,
       });
-    }
 
-    if (claudeProcess.stderr) {
-      const rl = readline.createInterface({ input: claudeProcess.stderr });
-      rl.on('line', (line) => {
-        this.currentSession?.outputBuffer.push(`[stderr] ${line}`);
-        if (line.toLowerCase().includes('error')) {
-          this.logger.warn(`Claude error: ${line}`);
-        }
+      // Use Brain to decide how to answer
+      const answer = await this.handleQuestion(question, task);
+      this.logger.info(`Answering: ${answer}`);
+
+      await terminal.executeAction({
+        type: 'answer',
+        content: answer,
+        reason: 'Brain decision',
       });
-    }
+    });
 
-    claudeProcess.on('exit', async (code) => {
-      const session = this.currentSession;
-      if (!session) return;
+    // Handle limit reached
+    terminal.on('limitReached', (resetTime) => {
+      if (this.sessionEndReason === 'limit') {
+        return;
+      }
+
+      this.logger.warn(`Usage limit reached, resets at ${resetTime?.toISOString()}`);
+
+      eventBus.publish('code', 'limit_reached', {
+        taskId: this.currentSession?.taskId,
+        resetTime: resetTime?.toISOString(),
+      });
+
+      // Stop the session and mark for retry later
+      void this.handleLimitReached(task, repo, resetTime);
+    });
+
+    // Handle process exit
+    terminal.on('exit', async (code, signal) => {
+      this.logger.info(`Claude exited: code=${code}, signal=${signal}`);
 
       if (this.sessionTimeout) {
         clearTimeout(this.sessionTimeout);
         this.sessionTimeout = null;
       }
 
+      const endReason = this.sessionEndReason;
+      this.sessionEndReason = null;
+
+      if (endReason) {
+        this.logger.info(`Session ended intentionally (${endReason})`);
+        this.currentSession = null;
+        return;
+      }
+
+      // Determine if this was success or failure
       if (code === 0) {
-        await this.handleTaskSuccess(task);
+        await this.handleTaskSuccess(task, repo);
+      } else if (signal) {
+        // Killed by signal - likely intentional stop
+        this.logger.info(`Session ended by signal: ${signal}`);
       } else {
-        await this.handleTaskFailure(task, `Exit code: ${code}`);
+        await this.handleTaskFailure(task, repo, `Exit code: ${code}`);
       }
 
       this.currentSession = null;
     });
+
+    // Handle errors
+    terminal.on('error', (error) => {
+      this.logger.error(`Terminal error: ${error.message}`);
+
+      eventBus.publish('code', 'error', {
+        taskId: this.currentSession?.taskId,
+        error: error.message,
+      });
+    });
   }
 
   /**
-   * Check if a line is a question from Claude
+   * Check if the task is completed by examining recent output
    */
-  private isQuestion(line: string): boolean {
-    const patterns = [
-      /\?\s*\[y\/n\]/i,
-      /proceed\?/i,
-      /continue\?/i,
-      /apply.*\?/i,
-      /create.*\?/i,
-      /should I/i,
+  private async checkTaskCompletion(task: BeadTask, repo: RepoConfig): Promise<void> {
+    if (!this.currentSession) return;
+
+    const observation = this.currentSession.terminal.getObservation();
+    const recentOutput = observation.recentOutput;
+
+    // Look for completion indicators
+    const completionIndicators = [
+      /completed.*task/i,
+      /finished.*implementation/i,
+      /changes.*committed/i,
+      /tests.*pass/i,
+      /ready.*for.*review/i,
     ];
-    return patterns.some(p => p.test(line));
+
+    const isComplete = completionIndicators.some((pattern) => pattern.test(recentOutput));
+
+    if (isComplete) {
+      this.logger.info('Task appears complete, initiating wrap-up...');
+
+      // Send exit command to Claude
+      await this.currentSession.terminal.executeAction({ type: 'send', content: '/exit' });
+    }
   }
 
   /**
-   * Handle a question from Claude
+   * Handle a question from Claude using Brain
    */
   private async handleQuestion(question: string, task: BeadTask): Promise<string> {
     // Safety checks first
@@ -365,8 +660,20 @@ export class CodeAgentModule extends DarwinModule {
     if (question.match(/run.*test/i)) return 'y';
     if (question.match(/create.*file/i)) return 'y';
     if (question.match(/apply.*changes/i)) return 'y';
+    if (question.match(/\[y\/n\]/i) && question.match(/proceed|continue|apply|create/i)) return 'y';
 
-    // Ask Brain (uses FunctionGemma's decide)
+    // Check for multi-choice questions (numbered options)
+    const multiChoice = question.match(/^\s*([1-9])\.\s+(.+)/m);
+    if (multiChoice) {
+      // Ask Brain to choose the best option
+      const choice = await this.brain.reason(
+        `Claude Code is working on "${task.title}" and presents options:\n${question}\n\nWhich option number (1-9) is best? Reply with just the number.`
+      );
+      const choiceNum = choice.match(/\d/)?.[0] || '1';
+      return choiceNum;
+    }
+
+    // Ask Brain for y/n decision
     const shouldApprove = await this.brain.decide(
       `Claude Code is working on "${task.title}" and asks: "${question}". Should we approve?`
     );
@@ -399,77 +706,107 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   /**
+   * Handle limit reached - pause and schedule retry
+   */
+  private async handleLimitReached(task: BeadTask, repo: RepoConfig, resetTime?: Date): Promise<void> {
+    if (this.sessionEndReason === 'limit') {
+      return;
+    }
+
+    this.sessionEndReason = 'limit';
+    this.limitResumeTask = { taskId: task.id, repoName: repo.name };
+    this.applyLimitCooldown(resetTime, 'cli');
+
+    // Stop the current session gracefully
+    await this.stopCurrentSession('Limit reached', 'limit');
+
+    // Update task with note about limit
+    const resetAt = resetTime || this.limitUntil || undefined;
+    const note = resetAt
+      ? `Usage limit reached, will retry after ${resetAt.toISOString()}`
+      : 'Usage limit reached';
+
+    await execAsync(
+      `bd update ${task.id} --notes "${note.replace(/"/g, '\\"')}"`,
+      { cwd: repo.path }
+    ).catch(() => {});
+
+    eventBus.publish('code', 'limit_reached', {
+      taskId: task.id,
+      repo: repo.name,
+      resetTime: resetTime?.toISOString(),
+    });
+  }
+
+  /**
    * Handle successful task completion
    */
-  private async handleTaskSuccess(task: BeadTask): Promise<void> {
-    this.logger.info(`Task ${task.id} completed`);
+  private async handleTaskSuccess(task: BeadTask, repo: RepoConfig): Promise<void> {
+    this.logger.info(`Task ${task.id} completed (${repo.name})`);
 
     // Run tests
-    const testResult = await this.runTests();
+    const testCommand = repo.testCommand || this.config.defaults.testCommand;
+    const testResult = await this.runTests(repo, testCommand);
 
     if (!testResult.passed) {
-      await this.handleTaskFailure(task, `Tests failed: ${testResult.output.slice(0, 200)}`);
+      await this.handleTaskFailure(task, repo, `Tests failed: ${testResult.output.slice(0, 200)}`);
       return;
     }
 
     // Commit and push
     const commitMsg = await this.generateCommitMessage(task);
-    await execAsync(`git add -A && git commit -m "${commitMsg}"`, { cwd: this.config.repoPath });
+    await execAsync(`git add -A && git commit -m "${commitMsg}"`, { cwd: repo.path });
 
-    const branch = await this.getCurrentBranch();
-    await execAsync(`git push -u origin ${branch}`, { cwd: this.config.repoPath });
+    const branch = await this.getCurrentBranch(repo);
+    await execAsync(`git push -u origin ${branch}`, { cwd: repo.path });
 
     // Create PR
-    const prUrl = await this.createPR(task);
+    const prUrl = await this.createPR(repo, task);
 
     // Close Beads task
-    await execAsync(`bd close ${task.id} --reason "PR: ${prUrl}"`, { cwd: this.config.repoPath });
+    await execAsync(`bd close ${task.id} --reason "PR: ${prUrl}"`, { cwd: repo.path });
 
-    eventBus.publish('code', 'task_completed', { taskId: task.id, prUrl });
+    eventBus.publish('code', 'task_completed', { taskId: task.id, repo: repo.name, prUrl });
   }
 
   /**
    * Handle task failure
    */
-  private async handleTaskFailure(task: BeadTask, error: string): Promise<void> {
-    this.logger.error(`Task ${task.id} failed: ${error}`);
+  private async handleTaskFailure(task: BeadTask, repo: RepoConfig, error: string): Promise<void> {
+    this.logger.error(`Task ${task.id} failed (${repo.name}): ${error}`);
 
     // Rollback changes
-    await execAsync('git reset --hard HEAD && git clean -fd', { cwd: this.config.repoPath }).catch(() => {});
+    await execAsync('git reset --hard HEAD && git clean -fd', { cwd: repo.path }).catch(() => {});
 
     // Update Beads
     await execAsync(
       `bd update ${task.id} --status blocked --notes "${error.replace(/"/g, '\\"').slice(0, 200)}"`,
-      { cwd: this.config.repoPath }
+      { cwd: repo.path }
     ).catch(() => {});
 
-    eventBus.publish('code', 'task_failed', { taskId: task.id, error });
+    eventBus.publish('code', 'task_failed', { taskId: task.id, repo: repo.name, error });
   }
 
   /**
    * Stop current session
    */
-  private async stopCurrentSession(reason?: string): Promise<{ success: boolean }> {
+  private async stopCurrentSession(
+    reason?: string,
+    endReason: SessionEndReason = 'stopped'
+  ): Promise<{ success: boolean }> {
     if (!this.currentSession) {
       return { success: false };
     }
 
-    const { claudeProcess, taskId } = this.currentSession;
+    const { terminal, taskId, repo } = this.currentSession;
 
-    claudeProcess.stdin?.write('/exit\n');
-    claudeProcess.stdin?.end();
+    this.logger.info(`Stopping session: ${reason || 'user request'}`);
+    if (!this.sessionEndReason) {
+      this.sessionEndReason = endReason;
+    }
 
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        if (!claudeProcess.killed) claudeProcess.kill('SIGTERM');
-        resolve();
-      }, 3000);
-
-      claudeProcess.on('exit', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
+    // Stop the terminal (sends /exit, then force kills if needed)
+    await terminal.stop(false);
 
     if (this.sessionTimeout) {
       clearTimeout(this.sessionTimeout);
@@ -478,14 +815,18 @@ export class CodeAgentModule extends DarwinModule {
 
     this.currentSession = null;
 
-    eventBus.publish('code', 'task_stopped', { taskId, reason });
+    eventBus.publish('code', 'task_stopped', { taskId, repo: repo.name, reason });
     return { success: true };
   }
 
   /**
    * Check Claude Code capacity
    */
-  private async checkClaudeCapacity(): Promise<{ available: boolean; utilization: number; resetsAt?: string }> {
+  private async checkClaudeCapacity(): Promise<{
+    available: boolean;
+    utilization: number;
+    resetsAt?: string;
+  }> {
     try {
       // Get OAuth token from keychain
       const { stdout: tokenJson } = await execAsync(
@@ -500,7 +841,7 @@ export class CodeAgentModule extends DarwinModule {
 
       const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
         headers: {
-          'Authorization': `Bearer ${token}`,
+          Authorization: `Bearer ${token}`,
           'anthropic-beta': 'oauth-2025-04-20',
         },
       });
@@ -509,13 +850,13 @@ export class CodeAgentModule extends DarwinModule {
         return { available: true, utilization: 0 };
       }
 
-      const data = await response.json() as {
-        five_hour?: { utilization: number; resets_at: string }
+      const data = (await response.json()) as {
+        five_hour?: { utilization: number; resets_at: string };
       };
 
       const utilization = data.five_hour?.utilization ?? 0;
       return {
-        available: utilization < this.config.usageThreshold,
+        available: utilization < this.config.defaults.usageThreshold,
         utilization,
         resetsAt: data.five_hour?.resets_at,
       };
@@ -528,42 +869,211 @@ export class CodeAgentModule extends DarwinModule {
    * Get current agent status
    */
   private async getAgentStatus(): Promise<{
-    activeTask: string | null;
+    activeTask: {
+      taskId: string;
+      repo: string;
+      startedAt: Date;
+      state: TerminalState;
+      outputLines: number;
+    } | null;
     capacity: { available: boolean; utilization: number };
-    readyTasks: number;
+    queue: Array<{ taskId: string; title: string; repo: string; priority: number }>;
+    repos: Array<{ name: string; enabled: boolean; taskCount: number }>;
   }> {
     const capacity = await this.checkClaudeCapacity();
-    const tasks = await this.getReadyTasks(100);
+    const tasks = await this.getReadyTasks(20);
+
+    // Get task counts per repo
+    const repoStats: Record<string, number> = {};
+    for (const { repo } of tasks) {
+      const name = repo.name || repo.path;
+      repoStats[name] = (repoStats[name] || 0) + 1;
+    }
 
     return {
-      activeTask: this.currentSession?.taskId ?? null,
+      activeTask: this.currentSession
+        ? {
+            taskId: this.currentSession.taskId,
+            repo: this.currentSession.repo.name || this.currentSession.repo.path,
+            startedAt: this.currentSession.startedAt,
+            state: this.currentSession.terminal.getState(),
+            outputLines: this.currentSession.outputBuffer.length,
+          }
+        : null,
       capacity,
-      readyTasks: tasks.length,
+      queue: tasks.map(({ task, repo }) => ({
+        taskId: task.id,
+        title: task.title,
+        repo: repo.name || repo.path,
+        priority: task.priority,
+      })),
+      repos: this.config.repos.map((r) => ({
+        name: r.name || r.path,
+        enabled: r.enabled,
+        taskCount: repoStats[r.name || r.path] || 0,
+      })),
     };
   }
 
-  // Helper methods
+  /**
+   * Add a task to a repo
+   */
+  private async addTask(args: {
+    repo: string;
+    title: string;
+    type?: string;
+    priority?: number;
+  }): Promise<{ success: boolean; taskId?: string; message: string }> {
+    const repo = this.config.repos.find((r) => r.name === args.repo);
+    if (!repo) {
+      return { success: false, message: `Unknown repo: ${args.repo}` };
+    }
 
-  private async createBranch(taskId: string, title: string): Promise<string> {
-    const safeName = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+    const type = args.type || 'task';
+    const priority = args.priority || 2;
+
+    try {
+      const { stdout } = await execAsync(
+        `bd create "${args.title}" -t ${type} -p ${priority} --json`,
+        { cwd: repo.path }
+      );
+      const result = JSON.parse(stdout);
+      const taskId = result.id || result.issue?.id;
+
+      eventBus.publish('code', 'task_created', {
+        taskId,
+        repo: repo.name,
+        title: args.title,
+      });
+
+      return { success: true, taskId, message: `Created ${taskId} in ${repo.name}` };
+    } catch (error) {
+      return { success: false, message: `Failed to create task: ${error}` };
+    }
+  }
+
+  /**
+   * List repos
+   */
+  private listRepos(): Array<{ name: string; path: string; enabled: boolean }> {
+    return this.config.repos.map((r) => ({
+      name: r.name!,
+      path: r.path,
+      enabled: r.enabled,
+    }));
+  }
+
+  // Helper methods
+  private isLimitActive(): boolean {
+    if (!this.limitUntil) {
+      return false;
+    }
+
+    if (this.limitUntil.getTime() <= Date.now()) {
+      this.limitUntil = null;
+      return false;
+    }
+
+    return true;
+  }
+
+  private applyLimitCooldown(resetTime: Date | undefined, source: 'cli' | 'api'): void {
+    const now = Date.now();
+    const resetMs = resetTime?.getTime();
+    const fallback = now + 60 * 60 * 1000;
+    const target = Number.isFinite(resetMs) ? resetMs! : fallback;
+    const untilMs = Math.max(target, now + 10_000);
+    const nextMs = this.limitUntil ? Math.max(this.limitUntil.getTime(), untilMs) : untilMs;
+
+    if (this.limitUntil && this.limitUntil.getTime() >= nextMs) {
+      return;
+    }
+
+    this.limitUntil = new Date(nextMs);
+    this.logger.warn(`Claude usage limit active until ${this.limitUntil.toISOString()} (${source})`);
+
+    if (this.limitTimer) {
+      clearTimeout(this.limitTimer);
+    }
+
+    const waitMs = Math.max(0, nextMs - Date.now());
+    this.limitTimer = setTimeout(() => {
+      this.limitTimer = null;
+      this.limitUntil = null;
+      this.resumeAfterLimit();
+    }, waitMs);
+  }
+
+  private resumeAfterLimit(): void {
+    if (this.pauseCheckFn?.()) {
+      this.logger.debug('Darwin paused - deferring limit resume');
+      return;
+    }
+
+    const resume = this.limitResumeTask;
+    this.limitResumeTask = null;
+
+    if (resume) {
+      void this.startTask(resume.taskId, resume.repoName).catch((error) => {
+        this.logger.error(`Failed to resume task ${resume.taskId}: ${error}`);
+      });
+      return;
+    }
+
+    void this.checkAndExecute().catch((error) => {
+      this.logger.error(`Failed to resume check loop after limit: ${error}`);
+    });
+  }
+
+  private async createBranch(repo: RepoConfig, taskId: string, title: string): Promise<string> {
+    const safeName = title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .slice(0, 40);
     const branch = `${taskId}-${safeName}`;
-    await execAsync(`git checkout -b ${branch}`, { cwd: this.config.repoPath });
+
+    try {
+      // Try creating a new branch
+      await execAsync(`git checkout -b ${branch}`, { cwd: repo.path });
+    } catch (error) {
+      const errorStr = String(error);
+
+      if (errorStr.includes('already exists')) {
+        // Branch exists - check it out instead
+        this.logger.info(`Branch ${branch} exists, checking out`);
+        await execAsync(`git checkout ${branch}`, { cwd: repo.path });
+
+        // Pull latest if remote exists
+        try {
+          await execAsync(`git pull origin ${branch} --rebase`, { cwd: repo.path });
+        } catch {
+          // No remote branch or pull failed - that's fine, continue with local
+        }
+      } else {
+        // Unknown error - rethrow
+        throw error;
+      }
+    }
+
     return branch;
   }
 
-  private async getCurrentBranch(): Promise<string> {
-    const { stdout } = await execAsync('git branch --show-current', { cwd: this.config.repoPath });
+  private async getCurrentBranch(repo: RepoConfig): Promise<string> {
+    const { stdout } = await execAsync('git branch --show-current', { cwd: repo.path });
     return stdout.trim();
   }
 
-  private async updateTaskStatus(taskId: string, status: string): Promise<void> {
-    await execAsync(`bd update ${taskId} --status ${status}`, { cwd: this.config.repoPath });
+  private async updateTaskStatus(repo: RepoConfig, taskId: string, status: string): Promise<void> {
+    await execAsync(`bd update ${taskId} --status ${status}`, { cwd: repo.path });
   }
 
-  private async runTests(): Promise<{ passed: boolean; output: string }> {
+  private async runTests(
+    repo: RepoConfig,
+    testCommand: string
+  ): Promise<{ passed: boolean; output: string }> {
     try {
-      const { stdout, stderr } = await execAsync(this.config.testCommand, {
-        cwd: this.config.repoPath,
+      const { stdout, stderr } = await execAsync(testCommand, {
+        cwd: repo.path,
         timeout: 5 * 60 * 1000,
       });
       return { passed: true, output: stdout + stderr };
@@ -573,16 +1083,22 @@ export class CodeAgentModule extends DarwinModule {
     }
   }
 
-  private async generatePrompt(task: BeadTask): Promise<string> {
+  private async generatePrompt(repo: RepoConfig, task: BeadTask): Promise<string> {
     // Use Brain's reasoner for better prompts
-    const guidance = await this.brain.reason(`
+    const guidance = await this.brain
+      .reason(
+        `
 Write 2-3 sentences of guidance for a coding agent working on:
 Task: ${task.title}
 Type: ${task.type}
 Description: ${task.description || 'N/A'}
 
 Be specific about files to check and approach to take. Under 50 words:
-    `).catch(() => 'Focus on the task, make minimal changes, run tests.');
+    `
+      )
+      .catch(() => 'Focus on the task, make minimal changes, run tests.');
+
+    const testCommand = repo.testCommand || this.config.defaults.testCommand;
 
     return `
 # Task: ${task.id} - ${task.title}
@@ -599,7 +1115,7 @@ ${guidance}
 1. Focus ONLY on this task
 2. Make minimal, targeted changes
 3. Write/update tests
-4. Run: ${this.config.testCommand}
+4. Run: ${testCommand}
 5. Summarise what you changed
 
 Begin.
@@ -611,19 +1127,23 @@ Begin.
     return `${type}(${task.id}): ${task.title.toLowerCase().slice(0, 50)}`;
   }
 
-  private async createPR(task: BeadTask): Promise<string> {
-    const branch = await this.getCurrentBranch();
-    const description = await this.brain.reason(`
+  private async createPR(repo: RepoConfig, task: BeadTask): Promise<string> {
+    const branch = await this.getCurrentBranch(repo);
+    const description = await this.brain
+      .reason(
+        `
 Write a brief PR description for:
 Task: ${task.id} - ${task.title}
 Type: ${task.type}
 
 Include what was changed and how it was tested. Under 100 words:
-    `).catch(() => `Closes ${task.id}`);
+    `
+      )
+      .catch(() => `Closes ${task.id}`);
 
     const { stdout } = await execAsync(
       `gh pr create --title "${task.id}: ${task.title}" --body "${description.replace(/"/g, '\\"')}" --base main --head ${branch}`,
-      { cwd: this.config.repoPath }
+      { cwd: repo.path }
     );
 
     return stdout.trim();

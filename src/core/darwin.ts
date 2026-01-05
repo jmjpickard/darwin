@@ -7,19 +7,21 @@
  * - Energy monitoring
  * - Security
  *
- * Powered by FunctionGemma (dispatcher) + Gemma 3 1B (reasoner)
+ * Powered by Qwen2.5 3B via Ollama
  */
 
 import { DarwinBrain, BrainConfig } from './brain.js';
 import { ModuleLoader, DarwinModule, ModuleConfig } from './module.js';
 import { EventBus, eventBus, DarwinEvent } from './event-bus.js';
 import { Logger, setLogLevel, LogLevel } from './logger.js';
+import { DarwinUserConfig } from './config.js';
 
 export interface DarwinConfig {
   brain: Partial<BrainConfig>;
   modules: Record<string, ModuleConfig>;
   logLevel: LogLevel;
   observeEvents: boolean; // Should Brain observe all events?
+  userConfig?: DarwinUserConfig; // User config from ~/.darwin/config.json
 }
 
 const DEFAULT_CONFIG: DarwinConfig = {
@@ -36,6 +38,7 @@ export class Darwin {
   private eventBus: EventBus;
   private logger: Logger;
   private isRunning = false;
+  private isPausedState = false;
 
   constructor(config: Partial<DarwinConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -72,11 +75,10 @@ export class Darwin {
 
     // Check brain health
     const health = await this.brain.checkHealth();
-    if (!health.dispatcher) {
-      throw new Error('FunctionGemma not available. Run: ollama pull functiongemma');
+    if (!health.healthy) {
+      throw new Error(health.error || `Model ${health.model} not available. Run: ollama pull ${health.model}`);
     }
-    this.logger.info(`   Dispatcher (FunctionGemma): OK`);
-    this.logger.info(`   Reasoner (Gemma 1B): ${health.reasoner ? 'available' : 'not pulled'}`);
+    this.logger.info(`   Model (${health.model}): OK`);
 
     // Set up event observation
     if (this.config.observeEvents) {
@@ -201,6 +203,59 @@ export class Darwin {
    */
   async reason(prompt: string): Promise<string> {
     return this.brain.reason(prompt);
+  }
+
+  /**
+   * Chat with Darwin - the main conversational interface
+   */
+  async chat(message: string): Promise<import('./brain.js').ChatResponse> {
+    return this.brain.chat(message);
+  }
+
+  /**
+   * Clear conversation history
+   */
+  clearChat(): void {
+    this.brain.clearHistory();
+  }
+
+  /**
+   * Pause Darwin - finish current task but don't pick up new ones
+   */
+  pause(): void {
+    this.isPausedState = true;
+    this.logger.info('Darwin paused - will finish current task but not start new ones');
+    this.eventBus.publish('darwin', 'paused', {});
+  }
+
+  /**
+   * Resume Darwin - start picking up tasks again
+   */
+  resume(): void {
+    this.isPausedState = false;
+    this.logger.info('Darwin resumed - will pick up tasks');
+    this.eventBus.publish('darwin', 'resumed', {});
+  }
+
+  /**
+   * Check if Darwin is paused
+   */
+  isPaused(): boolean {
+    return this.isPausedState;
+  }
+
+  /**
+   * Get the user config
+   */
+  getUserConfig(): DarwinUserConfig | undefined {
+    return this.config.userConfig;
+  }
+
+  /**
+   * Get the module loader (for accessing specific modules)
+   */
+  getModules(): ModuleLoader {
+    return this.modules;
   }
 }
 
