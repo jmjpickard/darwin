@@ -1,91 +1,91 @@
 # Darwin
 
-Local home intelligence system powered by **FunctionGemma** (dispatcher) and **Gemma 3 1B** (reasoner).
+Local home intelligence system that runs on a Raspberry Pi and keeps everything on-device.
+Darwin uses a local Ollama model for chat and tool calling, plus optional OpenRouter access
+for deep reasoning.
 
-A modular, privacy-first platform that coordinates:
-- **Code Agent** - Claude Code orchestration with Beads task management
-- **Home Automation** - Lights, heating, sensors via Zigbee
-- **Energy** - Power monitoring and optimization (coming soon)
-- **Security** - Motion sensors, cameras (coming soon)
+Darwin coordinates:
+- Code Agent - Claude Code orchestration with Beads task management
+- Home Automation - Lights, heating, sensors (mock today, Zigbee later)
+- Proactive assistant loop - Consciousness ticks and a visible monologue
+- Web search + page fetch - DuckDuckGo HTML search
 
-## Architecture
+## Current Architecture
 
 ```
-+-------------------------------------------------------------------------+
-|                              DARWIN                                      |
-|                                                                          |
-|  +--------------------------------------------------------------------+  |
-|  |                    FunctionGemma 270M (301MB)                      |  |
-|  |                    "The Dispatcher" - always loaded                |  |
-|  |                                                                    |  |
-|  |  Receives events -> Decides which tools to call -> Executes them  |  |
-|  +--------------------------------------------------------------------+  |
-|                              |                                           |
-|              +---------------+---------------+                           |
-|              v               v               v                           |
-|  +-----------------+ +-----------------+ +-----------------+             |
-|  |   Code Agent    | | Home Automation | |     Energy      |             |
-|  |                 | |                 | |    (planned)    |             |
-|  | - Beads tasks   | | - Zigbee lights | |                 |             |
-|  | - Claude Code   | | - Sensors       | | - Power monitor |             |
-|  | - GitHub PRs    | | - Heating       | | - Cost tracking |             |
-|  +-----------------+ +-----------------+ +-----------------+             |
-|                                                                          |
-|  +--------------------------------------------------------------------+  |
-|  |                    Gemma 3 1B (815MB)                              |  |
-|  |                    "The Reasoner" - loaded on demand               |  |
-|  |                                                                    |  |
-|  |  For complex decisions: code review, PR writing, task selection   |  |
-|  |  Auto-unloads after 5 minutes to save RAM                         |  |
-|  +--------------------------------------------------------------------+  |
-|                                                                          |
-|  +--------------------------------------------------------------------+  |
-|  |                         Event Bus                                  |  |
-|  |  Modules communicate via events, Brain observes and reacts        |  |
-|  +--------------------------------------------------------------------+  |
-+--------------------------------------------------------------------------+
++------------------------------------------------------------------+
+|                              DARWIN                              |
+|                                                                  |
+|  +-----------------------------+   +---------------------------+  |
+|  |        Monologue            |   |       Consciousness       |  |
+|  |  Thought stream + logging   |   |  Proactive tick loop      |  |
+|  +-----------------------------+   +---------------------------+  |
+|                 |                             |                  |
+|                 +------------+----------------+                  |
+|                              v                                   |
+|  +----------------------------------------------------------------+|
+|  |                 Brain (Qwen2.5 3B via Ollama)                  ||
+|  |  - Tool calling and chat                                       ||
+|  |  - Terminal observation for Claude Code                        ||
+|  +----------------------------------------------------------------+|
+|                              |                                   |
+|         +--------------------+--------------------+              |
+|         v                    v                    v              |
+|  +---------------+   +----------------+   +------------------+   |
+|  | Code Agent    |   | Home Automation|   | Web Search /      |   |
+|  | (Claude Code) |   | (mock now)     |   | OpenRouter (opt)  |   |
+|  +---------------+   +----------------+   +------------------+   |
+|                                                                  |
+|  +--------------------------------------------------------------+|
+|  |                        Event Bus                             ||
+|  +--------------------------------------------------------------+|
++------------------------------------------------------------------+
 ```
 
-## Why Two Models?
+## Models
 
-| Model | Size | Speed | Use Case |
-|-------|------|-------|----------|
-| **FunctionGemma 270M** | 301MB | ~20 tok/s | "What tools should I call?" |
-| **Gemma 3 1B** | 815MB | ~10 tok/s | "How should I write this PR?" |
+- Local model: `qwen2.5:3b` via Ollama (default)
+- Optional: OpenRouter for DeepSeek R1 (`deepseek/deepseek-r1`) to power `think_deep` and `research`
 
-FunctionGemma is specifically trained for tool/function calling - it's fast at deciding *what* to do. Gemma 1B is better at *reasoning* - writing prose, reviewing code, making nuanced decisions.
+## Quick Start (Pi 4, headless)
 
-On a Pi 4 with 4GB RAM, FunctionGemma stays resident (~500MB with Ollama), and Gemma 1B loads on demand for complex tasks.
-
-## Quick Start
-
-### 1. Install Prerequisites
+### 1. System prerequisites
 
 ```bash
-# On your Pi 4 / Linux machine
+sudo apt-get update
+sudo apt-get install -y git build-essential python3
+```
 
-# Install Node.js 22
+### 2. Install Node.js (20+)
+
+```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
+```
 
-# Install Ollama
+### 3. Install Ollama + pull the model
+
+```bash
 curl -fsSL https://ollama.com/install.sh | sh
+sudo systemctl enable --now ollama
 
-# Pull the models
-ollama pull functiongemma    # 301MB - dispatcher
-ollama pull gemma3:1b        # 815MB - reasoner (optional but recommended)
+ollama pull qwen2.5:3b
+```
 
-# Install CLI tools (for Code Agent)
+### 4. Install CLI tools (only if using Code Agent)
+
+```bash
 npm install -g @anthropic-ai/claude-code
 claude login
 
-sudo apt install gh
+sudo apt-get install -y gh
+
 gh auth login
 
 curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
 ```
 
-### 2. Install Darwin
+### 5. Install Darwin
 
 ```bash
 git clone https://github.com/you/darwin
@@ -93,116 +93,118 @@ cd darwin
 npm install
 ```
 
-### 3. Run Health Check
+### 6. Create config file
+
+Running Darwin once will create a template config at `~/.darwin/config.json`:
 
 ```bash
-npm run test:health
+npm run start -- --auto
 ```
 
-Expected output:
+Then edit the file and restart:
+
+```json
+{
+  "repos": [
+    {
+      "path": "/path/to/your/project",
+      "name": "my-project",
+      "enabled": true
+    }
+  ],
+  "defaults": {
+    "testCommand": "npm test",
+    "checkIntervalMs": 300000,
+    "maxSessionMinutes": 30,
+    "usageThreshold": 80
+  },
+  "consciousness": {
+    "tickIntervalMs": 30000,
+    "idleThinkingEnabled": true
+  },
+  "openrouter": {
+    "apiKey": "sk-or-...",
+    "defaultModel": "deepseek/deepseek-r1"
+  },
+  "webSearch": {
+    "enabled": true,
+    "maxResults": 5
+  }
+}
 ```
-Darwin Health Check
 
-1. Checking Ollama...
-   OK Running
-
-2. Checking models...
-   OK FunctionGemma (dispatcher): Available
-   OK Gemma 3 1B (reasoner): Available
-
-3. Testing FunctionGemma...
-   OK Response: "ready"
-
-4. Checking CLI tools...
-   OK Claude Code CLI: Installed
-   OK Beads CLI: Installed
-   OK GitHub CLI: Installed
-
-OK Health check: 7/7 checks passed
-```
-
-### 4. Start Darwin
+### 7. Run Darwin
 
 ```bash
-# Basic start (mock home automation)
+# Interactive REPL (shows thought stream)
 npm run start
 
-# With your code repo
-npm run start -- --repo /path/to/your/project
+# Headless daemon (no prompt, auto-start tasks)
+npm run start -- --auto
 
-# Auto-start Code Agent when capacity available
-npm run start -- --repo /path/to/project --auto
-
-# Debug mode
+# Debug logging
 npm run start -- --log debug
 ```
 
-### 5. Test the Brain
+## Interactive REPL
 
-```bash
-npm run test:brain
-```
+The REPL streams Darwin's monologue while you type. Built-in commands:
 
-Try these inputs:
-```
-> It's 11pm, no motion for 30 minutes
-[FunctionGemma calls: home_scene("bedtime")]
+- `help` - show available commands
+- `status` - show module and tool status
+- `tasks` - list ready Beads tasks
+- `pause` / `resume` - stop or resume picking up new tasks
+- `attach` - watch live Claude output (Ctrl+C to detach)
+- `thoughts` - recent monologue entries
+- `logs` - recent event bus activity
+- `mute` / `unmute` - toggle monologue stream
+- `clear` - reset chat history
+- `quit` - exit
 
-> Claude Code finished the authentication task
-[FunctionGemma calls: code_get_ready_tasks()]
+## Monologue and Consciousness
 
-> reason: Should I prioritize the memory leak bug or the new feature?
-[Gemma 1B reasons about priorities]
-```
+- Monologue log file: `~/.darwin/monologue.log`
+- Consciousness tick interval and idle thoughts are configured in `~/.darwin/config.json`
 
 ## Registered Tools
 
 ### Code Agent
 
-| Tool | Description |
-|------|-------------|
-| `code_get_ready_tasks` | Get tasks ready to work on from Beads |
-| `code_start_task` | Start Claude Code on a specific task |
-| `code_get_status` | Get agent status (capacity, active task) |
-| `code_stop_task` | Stop current Claude session |
-| `code_check_capacity` | Check Claude Code usage limits |
+- `code_get_ready_tasks`
+- `code_start_task`
+- `code_get_status`
+- `code_stop_task`
+- `code_check_capacity`
+- `code_add_task`
+- `code_list_repos`
 
 ### Home Automation
 
-| Tool | Description |
-|------|-------------|
-| `home_lights_set` | Control lights (room, brightness, color) |
-| `home_heating_set` | Set heating temperature |
-| `home_get_sensors` | Get sensor readings |
-| `home_get_motion` | Get recent motion events |
-| `home_scene` | Trigger scene (bedtime, morning, movie, away, home) |
+- `home_lights_set`
+- `home_heating_set`
+- `home_get_sensors`
+- `home_get_motion`
+- `home_scene`
 
-## Event Flow Example
+### Web + Research
 
-```
-Motion sensor -> Event Bus -> FunctionGemma
-                               |
-                    "Motion in kitchen at 7am"
-                               |
-                    Calls: home_lights_set(kitchen, 80)
-                           home_heating_set(all, 20)
-                               |
-                    Lights turn on, heating adjusts
-```
+- `web_search` (DuckDuckGo)
+- `web_fetch`
+- `think_deep` (OpenRouter, optional)
+- `research` (OpenRouter, optional)
 
 ## Configuration
 
-### Environment Variables
+### Environment variables
 
 ```bash
-OLLAMA_URL=http://localhost:11434   # Ollama API URL
-LOG_LEVEL=info                      # debug, info, warn, error
-DARWIN_TERMINAL_BACKEND=proxy       # proxy or pty
+DARWIN_CONFIG_DIR=~/.darwin
+DARWIN_TERMINAL_BACKEND=pty|proxy
 DARWIN_TERMINAL_PROXY_SOCKET=~/.darwin/terminald.sock
-DARWIN_TERMINAL_PROXY_TOKEN=        # optional shared token
+DARWIN_TERMINAL_PROXY_TOKEN=
 DARWIN_TERMINAL_PROXY_TIMEOUT_MS=5000
-DARWIN_TERMINAL_PROXY_SANITIZE_ENV=0  # set to 0 to keep DYLD_/LD_* vars
-DARWIN_TERMINAL_PROXY_MINIMAL_ENV=0   # set to 0 to skip minimal-env retry
+DARWIN_TERMINAL_PROXY_SANITIZE_ENV=0
+DARWIN_TERMINAL_PROXY_MINIMAL_ENV=0
 ```
 
 ### Terminal Proxy (Sandboxed Environments)
@@ -220,101 +222,37 @@ export DARWIN_TERMINAL_BACKEND=proxy
 npm run start
 ```
 
-### Module Config
+## Testing
 
-```typescript
-const darwin = new Darwin();
-
-darwin
-  .use(CodeAgentModule, {
-    enabled: true,
-    repoPath: '/path/to/your/project',
-    autoStart: true,              // Start tasks automatically
-    usageThreshold: 80,           // Don't start if Claude >80% used
-    maxSessionMinutes: 30,        // Max time per task
-    testCommand: 'npm test',      // Command to verify changes
-  })
-  .use(HomeAutomationModule, {
-    enabled: true,
-    mockMode: false,              // Set false for real devices
-    zigbee2mqttUrl: 'mqtt://localhost:1883',
-  });
-
-await darwin.start();
+```bash
+npm run build
+npm run test:health
+npm run test:brain
 ```
 
-## Adding a New Module
+## Hardware Notes
 
-```typescript
-import { DarwinModule, ModuleConfig } from 'darwin';
-
-export class MyModule extends DarwinModule {
-  readonly name = 'MyModule';
-  readonly description = 'Does something cool';
-
-  async init(): Promise<void> {
-    // Register tools with the Brain
-    this.registerTool(
-      'my_action',
-      'Description of what it does',
-      {
-        type: 'object',
-        properties: {
-          param1: { type: 'string', description: 'A parameter' },
-        },
-        required: ['param1'],
-      },
-      async (args) => {
-        // Do the thing
-        return { success: true };
-      }
-    );
-  }
-
-  async start(): Promise<void> {
-    this._enabled = true;
-  }
-
-  async stop(): Promise<void> {
-    this._enabled = false;
-  }
-}
-```
-
-## Hardware Requirements
-
-| Setup | RAM | Notes |
-|-------|-----|-------|
-| **Minimum** | 4GB | FunctionGemma only, one Claude session |
-| **Recommended** | 8GB | Both models, comfortable headroom |
-| **Ideal** | 16GB+ | Multiple concurrent agents, larger models |
-
-Works on:
-- Raspberry Pi 4 (4GB+)
-- Old laptops/mini PCs
-- Any Linux server
+- Raspberry Pi 4 (4GB) is supported for Qwen2.5 3B
+- OpenRouter calls use network access and are optional
+- Only one Claude Code session at a time to avoid memory spikes
 
 ## Roadmap
 
-- [x] Core Brain (FunctionGemma + Gemma 1B)
-- [x] Module system
-- [x] Event bus
-- [x] Code Agent module
-- [x] Home Automation module (mock)
+- [x] Qwen2.5 3B brain via Ollama
+- [x] Monologue and proactive consciousness loop
+- [x] Code Agent with PTY control
+- [x] Web search + OpenRouter integration
 - [ ] Real Zigbee integration (zigbee2mqtt)
 - [ ] Energy monitoring module
-- [ ] Security module
-- [ ] Web dashboard (T3 stack)
-- [ ] Mobile notifications
-- [ ] Voice input (Whisper)
+- [ ] Notifications module
+- [ ] Web dashboard
 
 ## Privacy
 
-Everything runs locally:
-- No cloud dependencies
-- Your data stays on your hardware
-- Models run on-device via Ollama
-- You control what gets shared
+Everything runs locally by default:
+- No cloud dependencies required
+- Data stays on your hardware
+- Optional OpenRouter usage is opt-in
 
 ## License
 
