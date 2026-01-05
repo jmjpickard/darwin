@@ -179,11 +179,15 @@ The REPL streams Darwin's monologue while you type. Built-in commands:
 ### Code Agent
 
 - `code_get_ready_tasks`
+- `code_list_tasks`
+- `code_show_task`
 - `code_start_task`
 - `code_get_status`
 - `code_stop_task`
 - `code_check_capacity`
 - `code_add_task`
+- `code_update_task`
+- `code_close_task`
 - `code_list_repos`
 
 ### Home Automation

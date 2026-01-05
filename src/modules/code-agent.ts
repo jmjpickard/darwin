@@ -6,10 +6,14 @@
  *
  * Registers tools:
  * - code_get_ready_tasks: Get tasks ready to work on across all repos
+ * - code_list_tasks: List/search tasks across repos (optionally include closed)
+ * - code_show_task: Show details for a task
  * - code_start_task: Start Claude working on a task
  * - code_get_status: Get current agent status
  * - code_stop_task: Stop current task
  * - code_add_task: Create a new Beads task
+ * - code_update_task: Update task status and/or notes
+ * - code_close_task: Close a task with a reason
  * - code_list_repos: List configured repositories
  */
 
@@ -42,11 +46,24 @@ interface BeadTask {
   status: string;
   priority: number;
   type: string;
+  issue_type?: string;
+  created_at?: string;
+  updated_at?: string;
+  closed_at?: string;
+  close_reason?: string;
 }
 
 interface QueuedTask {
   task: BeadTask;
   repo: RepoConfig;
+}
+
+interface TaskQuery {
+  limit: number;
+  repoFilter?: string;
+  status?: string;
+  query?: string;
+  includeClosed?: boolean;
 }
 
 interface ClaudeSession {
@@ -190,6 +207,51 @@ export class CodeAgentModule extends DarwinModule {
       }
     );
 
+    // List/search tasks from all repos (includes closed if requested)
+    this.registerTool(
+      'code_list_tasks',
+      'List or search Beads tasks across repos (optionally include closed)',
+      {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max tasks to return' },
+          repo: { type: 'string', description: 'Filter by repo name (optional)' },
+          status: { type: 'string', description: 'Filter by status (e.g., open, in_progress, blocked, closed)' },
+          query: { type: 'string', description: 'Search text for title/description' },
+          includeClosed: { type: 'boolean', description: 'Include closed tasks when no status filter provided' },
+        },
+      },
+      async (args) => {
+        const limit = (args.limit as number) || 20;
+        return this.listTasks({
+          limit,
+          repoFilter: args.repo as string | undefined,
+          status: args.status as string | undefined,
+          query: args.query as string | undefined,
+          includeClosed: args.includeClosed as boolean | undefined,
+        });
+      }
+    );
+
+    // Show task details
+    this.registerTool(
+      'code_show_task',
+      'Show details for a Beads task',
+      {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
+          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
+        },
+        required: ['taskId'],
+      },
+      async (args) => {
+        const taskId = args.taskId as string;
+        const repoName = args.repo as string | undefined;
+        return this.showTask(taskId, repoName);
+      }
+    );
+
     // Start working on a task
     this.registerTool(
       'code_start_task',
@@ -266,6 +328,52 @@ export class CodeAgentModule extends DarwinModule {
         required: ['repo', 'title'],
       },
       async (args) => this.addTask(args as { repo: string; title: string; type?: string; priority?: number })
+    );
+
+    // Update task status/notes
+    this.registerTool(
+      'code_update_task',
+      'Update a Beads task status and/or notes (use status "open" to reopen)',
+      {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
+          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
+          status: { type: 'string', description: 'New status (e.g., open, in_progress, blocked)' },
+          notes: { type: 'string', description: 'Notes to append to the task' },
+        },
+        required: ['taskId'],
+      },
+      async (args) => {
+        return this.updateTask({
+          taskId: args.taskId as string,
+          repo: args.repo as string | undefined,
+          status: args.status as string | undefined,
+          notes: args.notes as string | undefined,
+        });
+      }
+    );
+
+    // Close a task
+    this.registerTool(
+      'code_close_task',
+      'Close a Beads task with a reason',
+      {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
+          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
+          reason: { type: 'string', description: 'Reason for closing the task' },
+        },
+        required: ['taskId'],
+      },
+      async (args) => {
+        return this.closeTask(
+          args.taskId as string,
+          args.repo as string | undefined,
+          (args.reason as string | undefined) || 'Closed via Darwin'
+        );
+      }
     );
 
     // List repos
@@ -362,6 +470,203 @@ export class CodeAgentModule extends DarwinModule {
     allTasks.sort((a, b) => a.task.priority - b.task.priority);
 
     return allTasks.slice(0, limit);
+  }
+
+  /**
+   * List tasks across repos with optional filters
+   */
+  private async listTasks(options: TaskQuery): Promise<QueuedTask[]> {
+    const allTasks: QueuedTask[] = [];
+    const query = options.query?.toLowerCase();
+    const statusFilter = options.status?.toLowerCase();
+    const includeClosed = options.includeClosed === true;
+
+    const repos = options.repoFilter
+      ? this.config.repos.filter((r) => r.name === options.repoFilter)
+      : this.config.repos;
+
+    for (const repo of repos) {
+      if (!repo.enabled) continue;
+
+      try {
+        const { stdout } = await execAsync('bd list --json', {
+          cwd: repo.path,
+        });
+        const result = JSON.parse(stdout);
+        const tasks = (Array.isArray(result) ? result : result.issues || []) as Array<Record<string, unknown>>;
+
+        for (const raw of tasks) {
+          const task = this.normalizeTask(raw);
+          if (!task) continue;
+
+          const taskStatus = task.status.toLowerCase();
+          if (statusFilter && statusFilter !== 'all' && taskStatus !== statusFilter) {
+            continue;
+          }
+
+          if (!statusFilter && !includeClosed && taskStatus === 'closed') {
+            continue;
+          }
+
+          if (query) {
+            const haystack = `${task.title} ${task.description || ''}`.toLowerCase();
+            if (!haystack.includes(query)) {
+              continue;
+            }
+          }
+
+          allTasks.push({ task, repo });
+        }
+      } catch (error) {
+        this.logger.debug(`No tasks from ${repo.name}: ${error}`);
+      }
+    }
+
+    allTasks.sort((a, b) => {
+      if (a.task.priority !== b.task.priority) {
+        return a.task.priority - b.task.priority;
+      }
+      const aUpdated = a.task.updated_at ? Date.parse(a.task.updated_at) : 0;
+      const bUpdated = b.task.updated_at ? Date.parse(b.task.updated_at) : 0;
+      return bUpdated - aUpdated;
+    });
+
+    return allTasks.slice(0, options.limit);
+  }
+
+  /**
+   * Show details for a specific task
+   */
+  private async showTask(
+    taskId: string,
+    repoName?: string
+  ): Promise<{ success: boolean; task?: BeadTask; message: string }> {
+    const repo = await this.findRepo(taskId, repoName);
+    if (!repo) {
+      return { success: false, message: `Could not find repo for task ${taskId}` };
+    }
+
+    try {
+      const { stdout } = await execAsync(`bd show ${taskId} --json`, {
+        cwd: repo.path,
+      });
+      const result = JSON.parse(stdout);
+      const raw = Array.isArray(result) ? result[0] : result;
+      const task = raw ? this.normalizeTask(raw) : null;
+
+      if (!task) {
+        return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
+      }
+
+      return { success: true, task, message: `Found ${task.id} in ${repo.name}` };
+    } catch (error) {
+      return { success: false, message: `Failed to load task ${taskId}: ${error}` };
+    }
+  }
+
+  /**
+   * Update a task status and/or notes
+   */
+  private async updateTask(args: {
+    taskId: string;
+    repo?: string;
+    status?: string;
+    notes?: string;
+  }): Promise<{ success: boolean; message: string }> {
+    if (!args.status && !args.notes) {
+      return { success: false, message: 'No status or notes provided' };
+    }
+
+    const repo = await this.findRepo(args.taskId, args.repo);
+    if (!repo) {
+      return { success: false, message: `Could not find repo for task ${args.taskId}` };
+    }
+
+    if (args.status?.toLowerCase() === 'closed') {
+      return this.closeTask(args.taskId, repo.name, 'Closed via Darwin');
+    }
+
+    const parts: string[] = [`bd update ${args.taskId}`];
+    if (args.status) {
+      parts.push(`--status ${args.status}`);
+    }
+    if (args.notes) {
+      parts.push(`--notes "${this.escapeShellArg(args.notes)}"`);
+    }
+
+    try {
+      await execAsync(parts.join(' '), { cwd: repo.path });
+
+      eventBus.publish('code', 'task_updated', {
+        taskId: args.taskId,
+        repo: repo.name,
+        status: args.status,
+      });
+
+      return { success: true, message: `Updated ${args.taskId} in ${repo.name}` };
+    } catch (error) {
+      return { success: false, message: `Failed to update task ${args.taskId}: ${error}` };
+    }
+  }
+
+  /**
+   * Close a task with a reason
+   */
+  private async closeTask(
+    taskId: string,
+    repoName?: string,
+    reason = 'Closed via Darwin'
+  ): Promise<{ success: boolean; message: string }> {
+    const repo = await this.findRepo(taskId, repoName);
+    if (!repo) {
+      return { success: false, message: `Could not find repo for task ${taskId}` };
+    }
+
+    try {
+      await execAsync(
+        `bd close ${taskId} --reason "${this.escapeShellArg(reason)}"`,
+        { cwd: repo.path }
+      );
+
+      eventBus.publish('code', 'task_closed', {
+        taskId,
+        repo: repo.name,
+        reason,
+      });
+
+      return { success: true, message: `Closed ${taskId} in ${repo.name}` };
+    } catch (error) {
+      return { success: false, message: `Failed to close task ${taskId}: ${error}` };
+    }
+  }
+
+  /**
+   * Normalize Beads task shape
+   */
+  private normalizeTask(raw: Record<string, unknown>): BeadTask | null {
+    const id = raw.id;
+    const title = raw.title;
+    const status = raw.status;
+    const priority = raw.priority;
+    const type = raw.type || raw.issue_type;
+
+    if (typeof id !== 'string' || typeof title !== 'string' || typeof status !== 'string') {
+      return null;
+    }
+
+    return {
+      id,
+      title,
+      description: typeof raw.description === 'string' ? raw.description : undefined,
+      status,
+      priority: typeof priority === 'number' ? priority : 0,
+      type: typeof type === 'string' ? type : 'task',
+      issue_type: typeof raw.issue_type === 'string' ? raw.issue_type : undefined,
+      created_at: typeof raw.created_at === 'string' ? raw.created_at : undefined,
+      updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : undefined,
+      closed_at: typeof raw.closed_at === 'string' ? raw.closed_at : undefined,
+      close_reason: typeof raw.close_reason === 'string' ? raw.close_reason : undefined,
+    };
   }
 
   /**
@@ -961,6 +1266,10 @@ export class CodeAgentModule extends DarwinModule {
       path: r.path,
       enabled: r.enabled,
     }));
+  }
+
+  private escapeShellArg(value: string): string {
+    return value.replace(/"/g, '\\"');
   }
 
   // Helper methods
