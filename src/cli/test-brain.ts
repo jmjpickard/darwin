@@ -12,7 +12,7 @@ import { HomeAutomationModule } from '../modules/home-automation.js';
 
 async function main(): Promise<void> {
   console.log('Darwin Brain Test\n');
-  console.log('Testing Darwin brain model via Ollama\n');
+  console.log('Testing Darwin brain model\n');
 
   const darwin = new Darwin({ logLevel: 'info' });
 

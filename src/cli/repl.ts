@@ -18,15 +18,18 @@
  *   logs     - Recent activity events
  *   clear    - Start fresh conversation
  *   quit     - Exit Darwin
+ *   /brain   - Show or update brain provider/model (requires restart)
  *
  * Or just chat naturally - Darwin understands natural language.
  */
 
 import * as readline from 'readline';
+import { writeFile } from 'fs/promises';
 import { Darwin } from '../core/darwin.js';
 import { CodeAgentModule } from '../modules/code-agent.js';
 import { eventBus } from '../core/event-bus.js';
 import type { Thought } from '../core/monologue.js';
+import { getConfigPath, loadConfig } from '../core/config.js';
 
 type ReplMode = 'normal' | 'attached';
 
@@ -156,6 +159,11 @@ function setupMonologueStream(ctx: ReplContext): void {
 async function handleInput(ctx: ReplContext, input: string): Promise<void> {
   const lower = input.toLowerCase();
 
+  if (input.startsWith('/')) {
+    await handleSlashCommand(ctx, input);
+    return;
+  }
+
   // Built-in commands (exact match for reliability)
   if (lower === 'help' || lower === '?') {
     showHelp();
@@ -255,12 +263,145 @@ Commands:
   mute/unmute  - Toggle monologue stream
   clear        - Start fresh conversation
   quit         - Exit Darwin
+  /brain       - Show or update brain provider/model (restart required)
+  /model       - Set brain model (restart required)
+  /provider    - Set brain provider (restart required)
 
 Or just chat naturally:
   "create a new task for fixing the login bug"
   "research the best approach for implementing X"
   "what are you thinking about?"
 `);
+}
+
+/**
+ * Handle slash commands
+ */
+async function handleSlashCommand(ctx: ReplContext, input: string): Promise<void> {
+  const parts = input.slice(1).trim().split(/\s+/).filter(Boolean);
+  const command = parts[0]?.toLowerCase();
+
+  if (!command || command === 'help') {
+    showHelp();
+    return;
+  }
+
+  if (command === 'brain') {
+    await handleBrainCommand(ctx, parts.slice(1));
+    return;
+  }
+
+  if (command === 'model') {
+    const model = parts.slice(1).join(' ');
+    if (!model) {
+      console.log('Usage: /model <model-id>\n');
+      return;
+    }
+    await updateBrainConfig({ model });
+    console.log(`Updated brain model to "${model}". Restart Darwin to apply.\n`);
+    return;
+  }
+
+  if (command === 'provider') {
+    const provider = parts[1] as 'ollama' | 'openrouter' | undefined;
+    if (!provider || (provider !== 'ollama' && provider !== 'openrouter')) {
+      console.log('Usage: /provider <ollama|openrouter>\n');
+      return;
+    }
+    await updateBrainConfig({ provider });
+    console.log(`Updated brain provider to "${provider}". Restart Darwin to apply.\n`);
+    return;
+  }
+
+  console.log(`Unknown command: /${command}. Type "help" for commands.\n`);
+}
+
+/**
+ * Handle /brain command
+ */
+async function handleBrainCommand(ctx: ReplContext, args: string[]): Promise<void> {
+  if (args.length === 0 || args[0] === 'status') {
+    await showBrainStatus(ctx);
+    return;
+  }
+
+  if (args[0] === 'help') {
+    console.log('Usage:\n  /brain status\n  /brain <ollama|openrouter> [model-id]\n  /brain model <model-id>\n  /brain provider <ollama|openrouter>\n');
+    return;
+  }
+
+  if (args[0] === 'model') {
+    const model = args.slice(1).join(' ');
+    if (!model) {
+      console.log('Usage: /brain model <model-id>\n');
+      return;
+    }
+    await updateBrainConfig({ model });
+    console.log(`Updated brain model to "${model}". Restart Darwin to apply.\n`);
+    return;
+  }
+
+  if (args[0] === 'provider') {
+    const provider = args[1] as 'ollama' | 'openrouter' | undefined;
+    if (!provider || (provider !== 'ollama' && provider !== 'openrouter')) {
+      console.log('Usage: /brain provider <ollama|openrouter>\n');
+      return;
+    }
+    await updateBrainConfig({ provider });
+    console.log(`Updated brain provider to "${provider}". Restart Darwin to apply.\n`);
+    return;
+  }
+
+  const provider = args[0] as 'ollama' | 'openrouter' | undefined;
+  if (!provider || (provider !== 'ollama' && provider !== 'openrouter')) {
+    console.log('Usage: /brain <ollama|openrouter> [model-id]\n');
+    return;
+  }
+
+  const model = args.slice(1).join(' ');
+  await updateBrainConfig({ provider, model: model || undefined });
+  const modelNote = model ? ` and model "${model}"` : '';
+  console.log(`Updated brain provider to "${provider}"${modelNote}. Restart Darwin to apply.\n`);
+}
+
+/**
+ * Show brain status (runtime + config)
+ */
+async function showBrainStatus(ctx: ReplContext): Promise<void> {
+  const brain = ctx.darwin.getBrain();
+  const runtimeProvider = brain.getProvider();
+  const runtimeModel = brain.getModel();
+  const config = await loadConfig();
+  const configProvider = config.brain?.provider || 'ollama';
+  const configModel = config.brain?.model || (configProvider === 'openrouter'
+    ? (config.openrouter?.defaultModel || 'deepseek/deepseek-r1')
+    : 'llama3.2:1b');
+
+  console.log('\nBrain status:');
+  console.log(`  Runtime: ${runtimeProvider} / ${runtimeModel}`);
+  console.log(`  Config:  ${configProvider} / ${configModel}`);
+  console.log(`  Config file: ${getConfigPath()}\n`);
+}
+
+/**
+ * Update brain config on disk
+ */
+async function updateBrainConfig(update: { provider?: 'ollama' | 'openrouter'; model?: string }): Promise<void> {
+  const config = await loadConfig();
+  const nextBrain = {
+    ...config.brain,
+    ...update,
+  };
+  config.brain = nextBrain;
+
+  if (update.provider === 'openrouter' && update.model) {
+    config.openrouter = {
+      ...config.openrouter,
+      defaultModel: update.model,
+    };
+  }
+
+  await writeFile(getConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
 }
 
 /**

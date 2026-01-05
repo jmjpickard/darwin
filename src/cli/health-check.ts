@@ -7,6 +7,7 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { loadConfig } from '../core/config.js';
 
 const execAsync = promisify(exec);
 
@@ -28,20 +29,62 @@ async function checkOllama(): Promise<CheckResult> {
   }
 }
 
-async function checkModels(): Promise<CheckResult[]> {
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+
+async function checkModels(provider: 'ollama' | 'openrouter', model: string, apiKey?: string): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
+
+  if (provider === 'openrouter') {
+    if (!apiKey) {
+      results.push({
+        name: 'OpenRouter API key',
+        ok: false,
+        message: 'Not configured. Set openrouter.apiKey in config',
+      });
+      return results;
+    }
+
+    try {
+      const response = await fetch(`${OPENROUTER_BASE_URL}/models`, {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
+      });
+
+      if (!response.ok) {
+        results.push({
+          name: 'OpenRouter models',
+          ok: false,
+          message: `Failed to fetch models: ${response.status}`,
+        });
+        return results;
+      }
+
+      const data = await response.json() as { data: Array<{ id: string }> };
+      const models = data.data?.map(m => m.id) || [];
+      const hasBrainModel = models.some(m => m === model || m.includes(model));
+      results.push({
+        name: `OpenRouter model (${model})`,
+        ok: hasBrainModel,
+        message: hasBrainModel ? 'Available' : 'Not found in OpenRouter model list',
+      });
+    } catch (error) {
+      results.push({ name: 'OpenRouter models', ok: false, message: String(error) });
+    }
+
+    return results;
+  }
 
   try {
     const response = await fetch('http://localhost:11434/api/tags');
     const data = await response.json() as { models: Array<{ name: string }> };
     const models = data.models?.map(m => m.name) || [];
 
-    // Check brain model
-    const hasBrainModel = models.some(m => m.includes('llama3.2:1b'));
+    const hasBrainModel = models.some(m => m.includes(model));
     results.push({
-      name: 'Llama 3.2 1B (brain)',
+      name: `Ollama model (${model})`,
       ok: hasBrainModel,
-      message: hasBrainModel ? 'Available' : 'Not found. Darwin will pull on startup, or run: ollama pull llama3.2:1b',
+      message: hasBrainModel ? 'Available' : `Not found. Darwin will pull on startup, or run: ollama pull ${model}`,
     });
   } catch {
     results.push({ name: 'Models', ok: false, message: 'Could not check (Ollama not running)' });
@@ -50,13 +93,13 @@ async function checkModels(): Promise<CheckResult[]> {
   return results;
 }
 
-async function testBrainModel(): Promise<CheckResult> {
+async function testBrainModel(model: string): Promise<CheckResult> {
   try {
     const response = await fetch('http://localhost:11434/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama3.2:1b',
+        model,
         prompt: 'Say "ready" if you can hear me.',
         stream: false,
         options: { num_predict: 10 },
@@ -78,6 +121,40 @@ async function testBrainModel(): Promise<CheckResult> {
   }
 }
 
+async function testOpenRouterModel(model: string, apiKey: string): Promise<CheckResult> {
+  try {
+    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': 'https://darwin.local',
+        'X-Title': 'Darwin Home Intelligence',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'Say "ready" if you can hear me.' }],
+        max_tokens: 10,
+        temperature: 0.2,
+      }),
+    });
+
+    if (!response.ok) {
+      return { name: 'OpenRouter model test', ok: false, message: `Error: ${response.status}` };
+    }
+
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content || '';
+    return {
+      name: 'OpenRouter model test',
+      ok: true,
+      message: `Response: "${content.slice(0, 50).trim()}"`,
+    };
+  } catch (error) {
+    return { name: 'OpenRouter model test', ok: false, message: String(error) };
+  }
+}
+
 async function checkCli(command: string, name: string): Promise<CheckResult> {
   try {
     await execAsync(`which ${command}`);
@@ -91,25 +168,43 @@ async function main(): Promise<void> {
   console.log('Darwin Health Check\n');
 
   const results: CheckResult[] = [];
+  const userConfig = await loadConfig();
+  const brainProvider = userConfig.brain?.provider || 'ollama';
+  const brainModel = userConfig.brain?.model || (brainProvider === 'openrouter'
+    ? (userConfig.openrouter?.defaultModel || 'deepseek/deepseek-r1')
+    : 'llama3.2:1b');
 
-  // 1. Check Ollama
+  // 1. Check Ollama (only required for Ollama provider)
   console.log('1. Checking Ollama...');
-  const ollamaResult = await checkOllama();
-  results.push(ollamaResult);
-  console.log(`   ${ollamaResult.ok ? 'OK' : 'FAIL'} ${ollamaResult.message}`);
+  if (brainProvider === 'ollama') {
+    const ollamaResult = await checkOllama();
+    results.push(ollamaResult);
+    console.log(`   ${ollamaResult.ok ? 'OK' : 'FAIL'} ${ollamaResult.message}`);
+  } else {
+    console.log('   -- Skipped (OpenRouter provider)');
+  }
 
   // 2. Check models
   console.log('\n2. Checking models...');
-  const modelResults = await checkModels();
+  const modelResults = await checkModels(brainProvider, brainModel, userConfig.openrouter?.apiKey);
   for (const r of modelResults) {
     results.push(r);
     console.log(`   ${r.ok ? 'OK' : '--'} ${r.name}: ${r.message}`);
   }
 
   // 3. Test brain model (only if available)
-  if (results.find(r => r.name.includes('Llama 3.2 1B') && r.ok)) {
+  if (brainProvider === 'openrouter') {
+    if (userConfig.openrouter?.apiKey) {
+      console.log('\n3. Testing OpenRouter model...');
+      const testResult = await testOpenRouterModel(brainModel, userConfig.openrouter.apiKey);
+      results.push(testResult);
+      console.log(`   ${testResult.ok ? 'OK' : 'FAIL'} ${testResult.message}`);
+    } else {
+      console.log('\n3. Skipping OpenRouter model test (API key missing)');
+    }
+  } else if (results.find(r => r.name.includes('Ollama model') && r.ok)) {
     console.log('\n3. Testing brain model...');
-    const testResult = await testBrainModel();
+    const testResult = await testBrainModel(brainModel);
     results.push(testResult);
     console.log(`   ${testResult.ok ? 'OK' : 'FAIL'} ${testResult.message}`);
   } else {

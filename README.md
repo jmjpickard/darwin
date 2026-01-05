@@ -1,7 +1,7 @@
 # Darwin
 
 Local home intelligence system that runs on a Raspberry Pi and keeps everything on-device.
-Darwin uses a local Ollama model for chat and tool calling, plus optional OpenRouter access
+Darwin can use a local Ollama model or OpenRouter for chat and tool calling
 for deep reasoning.
 
 Darwin coordinates:
@@ -24,7 +24,7 @@ Darwin coordinates:
 |                 +------------+----------------+                  |
 |                              v                                   |
 |  +----------------------------------------------------------------+|
-|  |                Brain (Llama 3.2 1B via Ollama)                  ||
+|  |                 Brain (Configurable provider)                   ||
 |  |  - Tool calling and chat                                       ||
 |  |  - Terminal observation for Claude Code                        ||
 |  +----------------------------------------------------------------+|
@@ -45,6 +45,7 @@ Darwin coordinates:
 ## Models
 
 - Local model: `llama3.2:1b` via Ollama (default)
+- Optional: OpenRouter provider for Pi-friendly remote inference
 - Optional: OpenRouter for DeepSeek R1 (`deepseek/deepseek-r1`) to power `think_deep` and `research`
 
 ## Quick Start (Pi 4, headless)
@@ -119,6 +120,11 @@ Then edit the file and restart:
     "checkIntervalMs": 300000,
     "maxSessionMinutes": 30,
     "usageThreshold": 80
+  },
+  "brain": {
+    "provider": "ollama",
+    "model": "llama3.2:1b",
+    "timeoutMs": 60000
   },
   "consciousness": {
     "tickIntervalMs": 30000,
@@ -209,6 +215,24 @@ DARWIN_TERMINAL_PROXY_SANITIZE_ENV=0
 DARWIN_TERMINAL_PROXY_MINIMAL_ENV=0
 ```
 
+### Brain provider
+
+Configure the brain provider and model in `~/.darwin/config.json`:
+
+```json
+{
+  "brain": {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-r1",
+    "timeoutMs": 120000
+  },
+  "openrouter": {
+    "apiKey": "sk-or-...",
+    "defaultModel": "deepseek/deepseek-r1"
+  }
+}
+```
+
 ### Terminal Proxy (Sandboxed Environments)
 
 If you need Darwin to control a PTY from inside a sandboxed environment
@@ -241,6 +265,7 @@ npm run test:brain
 ## Roadmap
 
 - [x] Llama 3.2 1B brain via Ollama
+- [x] OpenRouter brain provider for Pi-friendly inference
 - [x] Monologue and proactive consciousness loop
 - [x] Code Agent with PTY control
 - [x] Web search + OpenRouter integration

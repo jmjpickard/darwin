@@ -1,8 +1,8 @@
 /**
- * Darwin Brain - Single-model AI coordinator using Llama 3.2 1B
+ * Darwin Brain - Configurable AI coordinator
  *
- * Llama 3.2 1B handles:
- * - Tool dispatch (function calling via Ollama)
+ * Handles:
+ * - Tool dispatch (function calling via Ollama or OpenRouter)
  * - Terminal observation (decides what to type in Claude sessions)
  * - Complex reasoning when needed
  */
@@ -10,6 +10,8 @@
 import { EventEmitter } from 'events';
 import { Logger } from './logger.js';
 import type { TerminalObservation, TerminalAction, TerminalActionType } from './terminal-types.js';
+
+type BrainProvider = 'ollama' | 'openrouter';
 
 export interface Tool {
   type: 'function';
@@ -25,6 +27,7 @@ export interface Tool {
 }
 
 export interface ToolCall {
+  id?: string;
   function: {
     name: string;
     arguments: Record<string, unknown>;
@@ -35,6 +38,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   tool_calls?: ToolCall[];
+  tool_call_id?: string;
 }
 
 export interface ChatResponse {
@@ -54,6 +58,23 @@ interface OllamaChatResponse {
   };
 }
 
+interface OpenRouterChatResponse {
+  choices: Array<{
+    message: {
+      role: string;
+      content?: string;
+      tool_calls?: Array<{
+        id?: string;
+        type?: string;
+        function: {
+          name: string;
+          arguments: string | Record<string, unknown>;
+        };
+      }>;
+    };
+  }>;
+}
+
 interface GenerateResponse {
   response: string;
   eval_count?: number;
@@ -66,10 +87,21 @@ interface RecoveryAction {
 }
 
 export interface BrainConfig {
-  /** Ollama model to use for all operations */
+  /** Brain provider */
+  provider: BrainProvider;
+  /** Model to use for the selected provider */
   model: string;
   /** Ollama API URL */
   ollamaUrl: string;
+  /** OpenRouter configuration (required when provider is openrouter) */
+  openRouter?: {
+    apiKey: string;
+    baseUrl?: string;
+    timeout?: number;
+    maxTokens?: number;
+    temperature?: number;
+    defaultModel?: string;
+  };
   /** Use model to reason about tool errors */
   enableErrorRecovery: boolean;
   /** Max retries per tool error */
@@ -81,12 +113,20 @@ export interface BrainConfig {
 }
 
 const DEFAULT_CONFIG: BrainConfig = {
+  provider: 'ollama',
   model: 'llama3.2:1b',
   ollamaUrl: 'http://localhost:11434',
   enableErrorRecovery: true,
   maxRecoveryAttempts: 2,
   timeout: 60_000, // 60 seconds
   pullTimeout: 30 * 60_000, // 30 minutes
+};
+
+const DEFAULT_OPENROUTER_CONFIG = {
+  baseUrl: 'https://openrouter.ai/api/v1',
+  timeout: 120_000,
+  maxTokens: 4096,
+  temperature: 0.7,
 };
 
 export class DarwinBrain extends EventEmitter {
@@ -181,9 +221,31 @@ Respond with ONLY a valid JSON object matching this schema:
   }
 
   /**
-   * Check if Ollama is running and the model is available
+   * Check if the selected provider is healthy and the model is available
    */
   async checkHealth(): Promise<{ healthy: boolean; model: string; available: boolean; error?: string }> {
+    if (this.config.provider === 'openrouter') {
+      try {
+        const model = this.getOpenRouterModel();
+        const models = await this.listOpenRouterModels();
+        const available = models.some(m => m === model || m.includes(model));
+
+        return {
+          healthy: available,
+          model,
+          available,
+          error: available ? undefined : `Model ${model} not found in OpenRouter`,
+        };
+      } catch (err) {
+        return {
+          healthy: false,
+          model: this.config.model,
+          available: false,
+          error: `OpenRouter check failed: ${err}`,
+        };
+      }
+    }
+
     try {
       const models = await this.listModels(this.config.timeout);
       const modelBase = this.config.model.split(':')[0];
@@ -209,6 +271,13 @@ Respond with ONLY a valid JSON object matching this schema:
    * Ensure the configured model is pulled locally
    */
   async ensureModelAvailable(): Promise<{ model: string; pulled: boolean }> {
+    if (this.config.provider === 'openrouter') {
+      if (!this.config.openRouter?.apiKey) {
+        throw new Error('OpenRouter API key not configured');
+      }
+      return { model: this.getOpenRouterModel(), pulled: false };
+    }
+
     const models = await this.listModels(this.config.timeout);
     const modelBase = this.config.model.split(':')[0];
     const available = models.some(m => m.includes(modelBase));
@@ -286,35 +355,16 @@ Respond with ONLY a valid JSON object matching this schema:
         ...this.conversationHistory,
       ];
 
-      // Call Ollama with tools available
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
-
-      const response = await fetch(`${this.config.ollamaUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.config.model,
-          messages,
-          tools: this.tools.length > 0 ? this.tools : undefined,
-          stream: false,
-        }),
-        signal: controller.signal,
+      const data = await this.requestChatCompletion(messages, {
+        tools: this.tools.length > 0 ? this.tools : undefined,
       });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`Ollama error: ${response.status}`);
-      }
-
-      const data = await response.json() as OllamaChatResponse;
       const assistantMessage = data.message;
 
       // Execute any tool calls
       let toolResults: ChatResponse['toolResults'];
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         toolResults = [];
+        const toolResultMessages: ChatMessage[] = [];
 
         for (const call of assistantMessage.tool_calls) {
           const result = await this.executeToolWithRecovery(
@@ -323,6 +373,14 @@ Respond with ONLY a valid JSON object matching this schema:
             userMessage
           );
           toolResults.push(result);
+          const toolContent = result.error
+            ? `Tool ${result.tool} failed: ${result.error}`
+            : `Tool ${result.tool} returned: ${JSON.stringify(result.result, null, 2)}`;
+          toolResultMessages.push({
+            role: 'tool',
+            content: toolContent,
+            tool_call_id: call.id,
+          });
         }
 
         // Add tool results to history
@@ -332,18 +390,7 @@ Respond with ONLY a valid JSON object matching this schema:
           tool_calls: assistantMessage.tool_calls,
         });
 
-        // Now ask the model to respond based on tool results
-        const toolResultsMessage = toolResults.map(r => {
-          if (r.error) {
-            return `Tool ${r.tool} failed: ${r.error}`;
-          }
-          return `Tool ${r.tool} returned: ${JSON.stringify(r.result, null, 2)}`;
-        }).join('\n\n');
-
-        this.conversationHistory.push({
-          role: 'tool',
-          content: toolResultsMessage,
-        });
+        this.conversationHistory.push(...toolResultMessages);
 
         // Get a conversational response about the results
         const followUp = await this.generateResponse(
@@ -394,27 +441,7 @@ Respond with ONLY a valid JSON object matching this schema:
       { role: 'user', content: prompt },
     ];
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
-
-    const response = await fetch(`${this.config.ollamaUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`Ollama error: ${response.status}`);
-    }
-
-    const data = await response.json() as OllamaChatResponse;
+    const data = await this.requestChatCompletion(messages);
     return data.message.content || '';
   }
 
@@ -639,31 +666,13 @@ REASON: <brief explanation>`;
     }
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
-
-      const response = await fetch(`${this.config.ollamaUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.config.model,
-          messages: [
-            { role: 'system', content: this.systemPrompt },
-            { role: 'user', content: prompt },
-          ] as ChatMessage[],
-          tools: this.tools,
-          stream: false,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`Ollama error: ${response.status}`);
-      }
-
-      const data = await response.json() as OllamaChatResponse;
+      const data = await this.requestChatCompletion(
+        [
+          { role: 'system', content: this.systemPrompt },
+          { role: 'user', content: prompt },
+        ],
+        { tools: this.tools }
+      );
       return data.message.tool_calls || [];
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
@@ -676,10 +685,158 @@ REASON: <brief explanation>`;
   }
 
   /**
+   * Normalize tool call arguments across providers
+   */
+  private normalizeToolCalls(rawCalls?: Array<{ id?: string; function: { name: string; arguments: unknown } }>): ToolCall[] {
+    if (!rawCalls || rawCalls.length === 0) return [];
+
+    return rawCalls.map((call) => {
+      let args = call.function.arguments;
+
+      if (typeof args === 'string') {
+        try {
+          args = JSON.parse(args);
+        } catch {
+          this.logger.warn(`Failed to parse tool args for ${call.function.name}`);
+          args = {};
+        }
+      }
+
+      if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        args = {};
+      }
+
+      return {
+        id: call.id,
+        function: {
+          name: call.function.name,
+          arguments: args as Record<string, unknown>,
+        },
+      };
+    });
+  }
+
+  /**
+   * Request a chat completion from the configured provider
+   */
+  private async requestChatCompletion(
+    messages: ChatMessage[],
+    options: { tools?: Tool[]; maxTokens?: number; temperature?: number } = {}
+  ): Promise<OllamaChatResponse> {
+    if (this.config.provider === 'openrouter') {
+      const config = this.getOpenRouterConfig();
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), config.timeout);
+      const outboundMessages = messages.map((message) => {
+        if (!message.tool_calls) {
+          return message;
+        }
+        const toolCalls = message.tool_calls.map((call) => ({
+          id: call.id,
+          type: 'function',
+          function: {
+            name: call.function.name,
+            arguments: JSON.stringify(call.function.arguments ?? {}),
+          },
+        }));
+        return { ...message, tool_calls: toolCalls };
+      });
+
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.apiKey}`,
+          'HTTP-Referer': 'https://darwin.local',
+          'X-Title': 'Darwin Home Intelligence',
+        },
+        body: JSON.stringify({
+          model: this.getOpenRouterModel(),
+          messages: outboundMessages,
+          tools: options.tools && options.tools.length > 0 ? options.tools : undefined,
+          tool_choice: options.tools && options.tools.length > 0 ? 'auto' : undefined,
+          max_tokens: options.maxTokens ?? config.maxTokens,
+          temperature: options.temperature ?? config.temperature,
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`OpenRouter error ${response.status}: ${errorText}`);
+      }
+
+      const data = await response.json() as OpenRouterChatResponse;
+      const choice = data.choices?.[0]?.message;
+      if (!choice) {
+        throw new Error('No response from OpenRouter');
+      }
+
+      const toolCalls = this.normalizeToolCalls(choice.tool_calls);
+      return {
+        message: {
+          role: choice.role || 'assistant',
+          content: choice.content || '',
+          tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+        },
+      };
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
+    const toolOptions = options.tools && options.tools.length > 0 ? options.tools : undefined;
+    const hasOptions = options.maxTokens !== undefined || options.temperature !== undefined;
+
+    const response = await fetch(`${this.config.ollamaUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.config.model,
+        messages,
+        tools: toolOptions,
+        stream: false,
+        options: hasOptions
+          ? {
+            num_predict: options.maxTokens,
+            temperature: options.temperature,
+          }
+          : undefined,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`Ollama error: ${response.status}`);
+    }
+
+    const data = await response.json() as OllamaChatResponse;
+    data.message.tool_calls = this.normalizeToolCalls(data.message.tool_calls as ToolCall[]);
+    return data;
+  }
+
+  /**
    * Use the model for complex reasoning or text generation
    */
   async reason(prompt: string, options?: { maxTokens?: number; temperature?: number }): Promise<string> {
     try {
+      if (this.config.provider === 'openrouter') {
+        const data = await this.requestChatCompletion(
+          [
+            { role: 'system', content: this.systemPrompt },
+            { role: 'user', content: prompt },
+          ],
+          {
+            maxTokens: options?.maxTokens,
+            temperature: options?.temperature,
+          }
+        );
+        return data.message.content || '';
+      }
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
 
@@ -721,6 +878,21 @@ REASON: <brief explanation>`;
    */
   async decide(question: string): Promise<boolean> {
     try {
+      if (this.config.provider === 'openrouter') {
+        const data = await this.requestChatCompletion(
+          [
+            { role: 'system', content: 'Answer yes/no questions with a single word.' },
+            { role: 'user', content: `${question}\n\nAnswer with just 'yes' or 'no':` },
+          ],
+          {
+            maxTokens: 5,
+            temperature: 0,
+          }
+        );
+        const answer = (data.message.content || '').toLowerCase();
+        return answer.includes('yes') || answer.includes('y');
+      }
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10_000); // 10s for simple decision
 
@@ -795,6 +967,14 @@ ${observation.recentOutput}
 What action should I take? Respond with ONLY a JSON object.`;
 
     try {
+      if (this.config.provider === 'openrouter') {
+        const data = await this.requestChatCompletion(
+          [{ role: 'user', content: prompt }],
+          { maxTokens: 150, temperature: 0.3 }
+        );
+        return this.parseTerminalAction(data.message.content || '');
+      }
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15_000); // 15s timeout for observation
 
@@ -863,6 +1043,64 @@ What action should I take? Respond with ONLY a JSON object.`;
   }
 
   /**
+   * Resolve OpenRouter configuration with defaults
+   */
+  private getOpenRouterConfig(): {
+    apiKey: string;
+    baseUrl: string;
+    timeout: number;
+    maxTokens: number;
+    temperature: number;
+    defaultModel?: string;
+  } {
+    if (!this.config.openRouter?.apiKey) {
+      throw new Error('OpenRouter API key not configured');
+    }
+
+    return {
+      apiKey: this.config.openRouter.apiKey,
+      baseUrl: this.config.openRouter.baseUrl || DEFAULT_OPENROUTER_CONFIG.baseUrl,
+      timeout: this.config.openRouter.timeout ?? DEFAULT_OPENROUTER_CONFIG.timeout,
+      maxTokens: this.config.openRouter.maxTokens ?? DEFAULT_OPENROUTER_CONFIG.maxTokens,
+      temperature: this.config.openRouter.temperature ?? DEFAULT_OPENROUTER_CONFIG.temperature,
+      defaultModel: this.config.openRouter.defaultModel,
+    };
+  }
+
+  /**
+   * Resolve OpenRouter model name
+   */
+  private getOpenRouterModel(): string {
+    const config = this.getOpenRouterConfig();
+    return this.config.model || config.defaultModel || 'deepseek/deepseek-r1';
+  }
+
+  /**
+   * List available OpenRouter models
+   */
+  private async listOpenRouterModels(): Promise<string[]> {
+    const config = this.getOpenRouterConfig();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), config.timeout);
+
+    const response = await fetch(`${config.baseUrl}/models`, {
+      headers: {
+        'Authorization': `Bearer ${config.apiKey}`,
+      },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`OpenRouter returned ${response.status}`);
+    }
+
+    const data = await response.json() as { data: Array<{ id: string }> };
+    return data.data?.map(m => m.id) || [];
+  }
+
+  /**
    * List available Ollama models
    */
   private async listModels(timeoutMs: number): Promise<string[]> {
@@ -916,13 +1154,17 @@ What action should I take? Respond with ONLY a JSON object.`;
    * Get current model name
    */
   getModel(): string {
-    return this.config.model;
+    return this.config.provider === 'openrouter' ? this.getOpenRouterModel() : this.config.model;
   }
 
   /**
    * Unload the model to free RAM (useful for Pi with limited memory)
    */
   async unloadModel(): Promise<void> {
+    if (this.config.provider === 'openrouter') {
+      return;
+    }
+
     this.logger.info('Unloading model to free RAM...');
 
     try {
@@ -946,6 +1188,13 @@ What action should I take? Respond with ONLY a JSON object.`;
    */
   getTools(): Tool[] {
     return [...this.tools];
+  }
+
+  /**
+   * Get current provider
+   */
+  getProvider(): BrainProvider {
+    return this.config.provider;
   }
 
   /**

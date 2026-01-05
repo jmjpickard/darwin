@@ -54,7 +54,7 @@ function printBanner(): void {
  |____/ \\__,_|_|    \\_/\\_/ |_|_| |_|
 
   Local Home Intelligence System
-  Powered by Llama 3.2 1B
+  Powered by your configured brain model
 `);
 }
 
@@ -82,6 +82,15 @@ Config file (${getConfigPath()}):
       "checkIntervalMs": 300000,
       "maxSessionMinutes": 30,
       "usageThreshold": 80
+    },
+    "brain": {
+      "provider": "ollama",
+      "model": "llama3.2:1b",
+      "timeoutMs": 60000
+    },
+    "openrouter": {
+      "apiKey": "sk-...",
+      "defaultModel": "deepseek/deepseek-r1"
     }
   }
 

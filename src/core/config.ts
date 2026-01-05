@@ -22,6 +22,15 @@ export interface ConsciousnessUserConfig {
   idleThinkingEnabled?: boolean;
 }
 
+export interface BrainUserConfig {
+  /** Brain provider (ollama or openrouter) */
+  provider?: 'ollama' | 'openrouter';
+  /** Model name for the selected provider */
+  model?: string;
+  /** Timeout for brain requests in ms */
+  timeoutMs?: number;
+}
+
 export interface OpenRouterUserConfig {
   /** OpenRouter API key */
   apiKey?: string;
@@ -44,6 +53,8 @@ export interface DarwinUserConfig {
     maxSessionMinutes: number;
     usageThreshold: number;
   };
+  /** Brain model/provider configuration */
+  brain?: BrainUserConfig;
   /** Consciousness loop configuration */
   consciousness?: ConsciousnessUserConfig;
   /** OpenRouter configuration for frontier model access */
@@ -59,6 +70,11 @@ const DEFAULT_USER_CONFIG: DarwinUserConfig = {
     checkIntervalMs: 5 * 60 * 1000, // 5 minutes
     maxSessionMinutes: 30,
     usageThreshold: 80,
+  },
+  brain: {
+    provider: 'ollama',
+    model: 'llama3.2:1b',
+    timeoutMs: 60_000,
   },
 };
 
@@ -119,6 +135,11 @@ export async function createTemplateConfig(): Promise<void> {
       checkIntervalMs: 300000,
       maxSessionMinutes: 30,
       usageThreshold: 80,
+    },
+    brain: {
+      provider: 'ollama',
+      model: 'llama3.2:1b',
+      timeoutMs: 60_000,
     },
     consciousness: {
       tickIntervalMs: 30000,
@@ -191,6 +212,18 @@ function validateConfig(config: unknown): DarwinUserConfig {
     };
   }
 
+  // Validate brain config
+  let brain: BrainUserConfig | undefined;
+  if (cfg.brain && typeof cfg.brain === 'object') {
+    const b = cfg.brain as Record<string, unknown>;
+    const provider = b.provider === 'openrouter' ? 'openrouter' : b.provider === 'ollama' ? 'ollama' : undefined;
+    brain = {
+      provider,
+      model: typeof b.model === 'string' ? b.model : undefined,
+      timeoutMs: typeof b.timeoutMs === 'number' ? b.timeoutMs : undefined,
+    };
+  }
+
   // Validate openrouter config
   let openrouter: OpenRouterUserConfig | undefined;
   if (cfg.openrouter && typeof cfg.openrouter === 'object') {
@@ -211,7 +244,7 @@ function validateConfig(config: unknown): DarwinUserConfig {
     };
   }
 
-  return { repos, defaults, consciousness, openrouter, webSearch };
+  return { repos, defaults, brain, consciousness, openrouter, webSearch };
 }
 
 /**

@@ -7,7 +7,7 @@
  * - Energy monitoring
  * - Security
  *
- * Powered by Llama 3.2 1B via Ollama
+ * Powered by a configurable model via Ollama or OpenRouter
  */
 
 import { DarwinBrain, BrainConfig } from './brain.js';
@@ -60,7 +60,28 @@ export class Darwin {
 
     this.logger = new Logger('Darwin');
     this.monologue = getMonologue({ consoleEnabled: false }); // CLI controls console output
-    this.brain = new DarwinBrain(this.config.brain);
+
+    const userBrain = this.config.userConfig?.brain;
+    const userOpenRouter = this.config.userConfig?.openrouter;
+    const brainConfig: Partial<BrainConfig> = {
+      ...this.config.brain,
+      provider: userBrain?.provider,
+      model: userBrain?.model,
+      timeout: userBrain?.timeoutMs,
+      openRouter: userOpenRouter?.apiKey
+        ? {
+          apiKey: userOpenRouter.apiKey,
+          defaultModel: userOpenRouter.defaultModel,
+          timeout: userBrain?.timeoutMs,
+        }
+        : undefined,
+    };
+
+    if (userBrain?.provider === 'openrouter' && !userBrain?.model) {
+      brainConfig.model = userOpenRouter?.defaultModel || 'deepseek/deepseek-r1';
+    }
+
+    this.brain = new DarwinBrain(brainConfig);
     this.modules = new ModuleLoader(this.brain);
     this.eventBus = eventBus;
     this.subAgents = new SubAgentManager(this.monologue);
@@ -252,17 +273,19 @@ export class Darwin {
     this.logger.info('Starting Darwin...');
     this.monologue.act('Waking up...');
 
-    const model = this.brain.getModel();
-    this.monologue.act(`Ensuring model ${model} is available...`);
-    try {
-      const result = await this.brain.ensureModelAvailable();
-      if (result.pulled) {
-        this.monologue.act(`Pulled model ${result.model}`);
+    if (this.brain.getProvider() === 'ollama') {
+      const model = this.brain.getModel();
+      this.monologue.act(`Ensuring model ${model} is available...`);
+      try {
+        const result = await this.brain.ensureModelAvailable();
+        if (result.pulled) {
+          this.monologue.act(`Pulled model ${result.model}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.monologue.alert(`Failed to pull model: ${message}`);
+        throw error;
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.monologue.alert(`Failed to pull model: ${message}`);
-      throw error;
     }
 
     // Check brain health
