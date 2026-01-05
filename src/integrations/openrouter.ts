@@ -3,7 +3,7 @@
  *
  * Provides access to DeepSeek R1 and other models via OpenRouter API.
  * Used for complex reasoning, research, and tasks that exceed
- * local Qwen 2.5's capabilities.
+ * local model's capabilities.
  *
  * Default model: DeepSeek R1 (deepseek/deepseek-r1)
  * - Excellent reasoning capability

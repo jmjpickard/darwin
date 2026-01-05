@@ -2,7 +2,7 @@
  * Code Agent Module - Orchestrates Claude Code with Beads task management
  *
  * Uses PTY-based TerminalController for true interactive Claude Code sessions.
- * Gemma/Brain handles question answering when Claude asks for input.
+ * Brain handles question answering when Claude asks for input.
  *
  * Registers tools:
  * - code_get_ready_tasks: Get tasks ready to work on across all repos

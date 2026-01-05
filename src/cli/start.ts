@@ -54,7 +54,7 @@ function printBanner(): void {
  |____/ \\__,_|_|    \\_/\\_/ |_|_| |_|
 
   Local Home Intelligence System
-  Powered by Qwen2.5 3B
+  Powered by Llama 3.2 3B
 `);
 }
 

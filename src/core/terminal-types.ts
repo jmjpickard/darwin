@@ -2,7 +2,7 @@
  * Terminal Types - State machine and interfaces for PTY-based terminal control
  *
  * Defines the state machine for observing and controlling a Claude Code session.
- * Qwen2.5 3B observes terminal output and decides what actions to take.
+ * The local model observes terminal output and decides what actions to take.
  */
 
 /**
@@ -33,7 +33,7 @@ export type TerminalState =
   | 'stopping';         // Graceful shutdown in progress
 
 /**
- * Actions that Qwen can request to control the terminal
+ * Actions the model can request to control the terminal
  */
 export type TerminalActionType =
   | 'type'      // Type text (without pressing enter)
@@ -57,7 +57,7 @@ export interface TerminalAction {
 }
 
 /**
- * What Qwen observes about the terminal state
+ * What the model observes about the terminal state
  * This is passed to the AI for decision making
  */
 export interface TerminalObservation {

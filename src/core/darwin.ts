@@ -7,7 +7,7 @@
  * - Energy monitoring
  * - Security
  *
- * Powered by Qwen2.5 3B via Ollama
+ * Powered by Llama 3.2 3B via Ollama
  */
 
 import { DarwinBrain, BrainConfig } from './brain.js';
@@ -181,7 +181,7 @@ export class Darwin {
       // Deep thinking tool
       this.brain.registerTool(
         'think_deep',
-        'Use DeepSeek R1 for complex reasoning (use when Qwen struggles)',
+        'Use DeepSeek R1 for complex reasoning (use when the local model struggles)',
         {
           type: 'object',
           properties: {
@@ -251,6 +251,19 @@ export class Darwin {
   async start(): Promise<void> {
     this.logger.info('Starting Darwin...');
     this.monologue.act('Waking up...');
+
+    const model = this.brain.getModel();
+    this.monologue.act(`Ensuring model ${model} is available...`);
+    try {
+      const result = await this.brain.ensureModelAvailable();
+      if (result.pulled) {
+        this.monologue.act(`Pulled model ${result.model}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.monologue.alert(`Failed to pull model: ${message}`);
+      throw error;
+    }
 
     // Check brain health
     const health = await this.brain.checkHealth();

@@ -36,20 +36,12 @@ async function checkModels(): Promise<CheckResult[]> {
     const data = await response.json() as { models: Array<{ name: string }> };
     const models = data.models?.map(m => m.name) || [];
 
-    // Check FunctionGemma
-    const hasDispatcher = models.some(m => m.includes('functiongemma'));
+    // Check brain model
+    const hasBrainModel = models.some(m => m.includes('llama3.2:3b'));
     results.push({
-      name: 'FunctionGemma (dispatcher)',
-      ok: hasDispatcher,
-      message: hasDispatcher ? 'Available' : 'Not found. Run: ollama pull functiongemma',
-    });
-
-    // Check Gemma 1B
-    const hasReasoner = models.some(m => m.includes('gemma3:1b'));
-    results.push({
-      name: 'Gemma 3 1B (reasoner)',
-      ok: hasReasoner,
-      message: hasReasoner ? 'Available' : 'Not found. Run: ollama pull gemma3:1b',
+      name: 'Llama 3.2 3B (brain)',
+      ok: hasBrainModel,
+      message: hasBrainModel ? 'Available' : 'Not found. Darwin will pull on startup, or run: ollama pull llama3.2:3b',
     });
   } catch {
     results.push({ name: 'Models', ok: false, message: 'Could not check (Ollama not running)' });
@@ -58,13 +50,13 @@ async function checkModels(): Promise<CheckResult[]> {
   return results;
 }
 
-async function testDispatcher(): Promise<CheckResult> {
+async function testBrainModel(): Promise<CheckResult> {
   try {
     const response = await fetch('http://localhost:11434/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'functiongemma',
+        model: 'llama3.2:3b',
         prompt: 'Say "ready" if you can hear me.',
         stream: false,
         options: { num_predict: 10 },
@@ -72,17 +64,17 @@ async function testDispatcher(): Promise<CheckResult> {
     });
 
     if (!response.ok) {
-      return { name: 'FunctionGemma test', ok: false, message: `Error: ${response.status}` };
+      return { name: 'Brain model test', ok: false, message: `Error: ${response.status}` };
     }
 
     const data = await response.json() as { response: string };
     return {
-      name: 'FunctionGemma test',
+      name: 'Brain model test',
       ok: true,
       message: `Response: "${data.response.slice(0, 50).trim()}"`,
     };
   } catch (error) {
-    return { name: 'FunctionGemma test', ok: false, message: String(error) };
+    return { name: 'Brain model test', ok: false, message: String(error) };
   }
 }
 
@@ -114,14 +106,14 @@ async function main(): Promise<void> {
     console.log(`   ${r.ok ? 'OK' : '--'} ${r.name}: ${r.message}`);
   }
 
-  // 3. Test FunctionGemma (only if available)
-  if (results.find(r => r.name.includes('FunctionGemma') && r.ok)) {
-    console.log('\n3. Testing FunctionGemma...');
-    const testResult = await testDispatcher();
+  // 3. Test brain model (only if available)
+  if (results.find(r => r.name.includes('Llama 3.2 3B') && r.ok)) {
+    console.log('\n3. Testing brain model...');
+    const testResult = await testBrainModel();
     results.push(testResult);
     console.log(`   ${testResult.ok ? 'OK' : 'FAIL'} ${testResult.message}`);
   } else {
-    console.log('\n3. Skipping FunctionGemma test (not available)');
+    console.log('\n3. Skipping brain model test (not available)');
   }
 
   // 4. Check CLI tools

@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Test Brain - Interactive CLI to test FunctionGemma dispatch
+ * Test Brain - Interactive CLI to test Darwin brain dispatch
  *
  * Usage: npm run test:brain
  */
@@ -12,7 +12,7 @@ import { HomeAutomationModule } from '../modules/home-automation.js';
 
 async function main(): Promise<void> {
   console.log('Darwin Brain Test\n');
-  console.log('Testing FunctionGemma dispatcher + Gemma 1B reasoner\n');
+  console.log('Testing Darwin brain model via Ollama\n');
 
   const darwin = new Darwin({ logLevel: 'info' });
 
@@ -29,8 +29,8 @@ async function main(): Promise<void> {
   }
 
   console.log('\n---');
-  console.log('Type an event/situation and see what tools FunctionGemma calls.');
-  console.log('Prefix with "reason:" to use Gemma 1B instead.');
+  console.log('Type an event/situation and see what tools the brain calls.');
+  console.log('Prefix with "reason:" to use the reasoning path instead.');
   console.log('Type "quit" to exit.\n');
 
   const rl = readline.createInterface({
@@ -51,7 +51,7 @@ async function main(): Promise<void> {
       if (trimmed.startsWith('reason:')) {
         // Use reasoner
         const query = trimmed.slice(7).trim();
-        console.log('\n[Using Gemma 1B reasoner...]\n');
+        console.log('\n[Using brain reasoning...]\n');
         try {
           const response = await darwin.reason(query);
           console.log(`Response: ${response}\n`);
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
         }
       } else {
         // Use dispatcher
-        console.log('\n[Using FunctionGemma dispatcher...]\n');
+        console.log('\n[Using brain dispatcher...]\n');
         try {
           const results = await darwin.dispatch(trimmed);
           if (results.length === 0) {

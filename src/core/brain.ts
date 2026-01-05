@@ -1,7 +1,7 @@
 /**
- * Darwin Brain - Single-model AI coordinator using Qwen2.5 3B
+ * Darwin Brain - Single-model AI coordinator using Llama 3.2 3B
  *
- * Qwen2.5 3B handles:
+ * Llama 3.2 3B handles:
  * - Tool dispatch (function calling via Ollama)
  * - Terminal observation (decides what to type in Claude sessions)
  * - Complex reasoning when needed
@@ -76,14 +76,17 @@ export interface BrainConfig {
   maxRecoveryAttempts: number;
   /** Default timeout for API calls in ms */
   timeout: number;
+  /** Timeout for pulling models in ms */
+  pullTimeout: number;
 }
 
 const DEFAULT_CONFIG: BrainConfig = {
-  model: 'qwen2.5:3b',
+  model: 'llama3.2:3b',
   ollamaUrl: 'http://localhost:11434',
   enableErrorRecovery: true,
   maxRecoveryAttempts: 2,
   timeout: 60_000, // 60 seconds
+  pullTimeout: 30 * 60_000, // 30 minutes
 };
 
 export class DarwinBrain extends EventEmitter {
@@ -153,7 +156,7 @@ Respond with ONLY a valid JSON object matching this schema:
   }
 
   /**
-   * Register a tool that FunctionGemma can call
+   * Register a tool that the model can call
    */
   registerTool(
     name: string,
@@ -182,12 +185,7 @@ Respond with ONLY a valid JSON object matching this schema:
    */
   async checkHealth(): Promise<{ healthy: boolean; model: string; available: boolean; error?: string }> {
     try {
-      const response = await fetch(`${this.config.ollamaUrl}/api/tags`);
-      if (!response.ok) {
-        return { healthy: false, model: this.config.model, available: false, error: `Ollama returned ${response.status}` };
-      }
-      const data = await response.json() as { models: Array<{ name: string }> };
-      const models = data.models?.map(m => m.name) || [];
+      const models = await this.listModels(this.config.timeout);
       const modelBase = this.config.model.split(':')[0];
       const available = models.some(m => m.includes(modelBase));
 
@@ -208,7 +206,31 @@ Respond with ONLY a valid JSON object matching this schema:
   }
 
   /**
-   * Ask Qwen what tools to call and execute them
+   * Ensure the configured model is pulled locally
+   */
+  async ensureModelAvailable(): Promise<{ model: string; pulled: boolean }> {
+    const models = await this.listModels(this.config.timeout);
+    const modelBase = this.config.model.split(':')[0];
+    const available = models.some(m => m.includes(modelBase));
+
+    if (available) {
+      return { model: this.config.model, pulled: false };
+    }
+
+    this.logger.info(`Model ${this.config.model} not found locally. Pulling...`);
+    await this.pullModel();
+
+    const refreshed = await this.listModels(this.config.timeout);
+    const nowAvailable = refreshed.some(m => m.includes(modelBase));
+    if (!nowAvailable) {
+      throw new Error(`Model ${this.config.model} still not available after pull`);
+    }
+
+    return { model: this.config.model, pulled: true };
+  }
+
+  /**
+   * Ask the model what tools to call and execute them
    */
   async dispatch(event: string, context?: Record<string, unknown>): Promise<unknown[]> {
     const contextStr = context ? `\nContext: ${JSON.stringify(context)}` : '';
@@ -413,7 +435,7 @@ Respond with ONLY a valid JSON object matching this schema:
   }
 
   /**
-   * Execute a tool with error recovery using Gemma 1B
+   * Execute a tool with error recovery using the model
    */
   private async executeToolWithRecovery(
     toolName: string,
@@ -452,7 +474,7 @@ Respond with ONLY a valid JSON object matching this schema:
         return { tool: resolvedName, error: errorStr };
       }
 
-      // Ask Gemma 1B to reason about the error and suggest recovery
+      // Ask the model to reason about the error and suggest recovery
       this.logger.info(`Consulting reasoner for error recovery (attempt ${attempt})...`);
       const recovery = await this.reasonAboutError(resolvedName, args, errorStr, originalPrompt);
 
@@ -488,7 +510,7 @@ Respond with ONLY a valid JSON object matching this schema:
   }
 
   /**
-   * Use Gemma 1B to reason about a tool error and decide recovery action
+   * Use the model to reason about a tool error and decide recovery action
    */
   private async reasonAboutError(
     toolName: string,
@@ -608,7 +630,7 @@ REASON: <brief explanation>`;
   }
 
   /**
-   * Ask Qwen which tools to call (without executing)
+   * Ask the model which tools to call (without executing)
    */
   private async getToolCalls(prompt: string): Promise<ToolCall[]> {
     if (this.tools.length === 0) {
@@ -654,7 +676,7 @@ REASON: <brief explanation>`;
   }
 
   /**
-   * Use Qwen for complex reasoning or text generation
+   * Use the model for complex reasoning or text generation
    */
   async reason(prompt: string, options?: { maxTokens?: number; temperature?: number }): Promise<string> {
     try {
@@ -729,7 +751,7 @@ REASON: <brief explanation>`;
    * Observe a terminal session and decide what action to take
    *
    * This is the core method for PTY-based Claude Code interaction.
-   * Qwen observes the terminal state and decides what to type next.
+   * The model observes the terminal state and decides what to type next.
    *
    * @param observation Current terminal state
    * @param taskContext Description of the task being worked on
@@ -752,7 +774,7 @@ REASON: <brief explanation>`;
       return { type: 'wait', waitMs, reason: 'Usage limit reached' };
     }
 
-    // Build prompt for Qwen
+    // Build prompt for the model
     const prompt = `${this.terminalSystemPrompt}
 
 TASK: ${taskContext}
@@ -806,7 +828,7 @@ What action should I take? Respond with ONLY a JSON object.`;
   }
 
   /**
-   * Parse Qwen's response into a TerminalAction
+   * Parse the model response into a TerminalAction
    */
   private parseTerminalAction(response: string): TerminalAction {
     try {
@@ -838,6 +860,63 @@ What action should I take? Respond with ONLY a JSON object.`;
       this.logger.warn('Failed to parse terminal action:', err);
       return { type: 'wait', waitMs: 500, reason: 'JSON parse error' };
     }
+  }
+
+  /**
+   * List available Ollama models
+   */
+  private async listModels(timeoutMs: number): Promise<string[]> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const response = await fetch(`${this.config.ollamaUrl}/api/tags`, {
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`Ollama returned ${response.status}`);
+    }
+
+    const data = await response.json() as { models: Array<{ name: string }> };
+    return data.models?.map(m => m.name) || [];
+  }
+
+  /**
+   * Pull the configured model from Ollama
+   */
+  private async pullModel(): Promise<void> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.config.pullTimeout);
+
+    const response = await fetch(`${this.config.ollamaUrl}/api/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: this.config.model,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`Ollama pull error: ${response.status}`);
+    }
+
+    const data = await response.json() as { status?: string; error?: string };
+    if (data.error) {
+      throw new Error(`Ollama pull error: ${data.error}`);
+    }
+  }
+
+  /**
+   * Get current model name
+   */
+  getModel(): string {
+    return this.config.model;
   }
 
   /**
