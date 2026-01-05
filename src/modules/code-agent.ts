@@ -19,6 +19,8 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { readFile } from 'fs/promises';
+import { join } from 'path';
 import { DarwinModule, ModuleConfig } from '../core/module.js';
 import { DarwinBrain } from '../core/brain.js';
 import { eventBus } from '../core/event-bus.js';
@@ -445,6 +447,7 @@ export class CodeAgentModule extends DarwinModule {
    */
   private async getReadyTasks(limit: number, repoFilter?: string): Promise<QueuedTask[]> {
     const allTasks: QueuedTask[] = [];
+    const readyStatuses = new Set(['open', 'ready']);
 
     const repos = repoFilter
       ? this.config.repos.filter((r) => r.name === repoFilter)
@@ -454,13 +457,9 @@ export class CodeAgentModule extends DarwinModule {
       if (!repo.enabled) continue;
 
       try {
-        const { stdout } = await execAsync('bd ready --json', {
-          cwd: repo.path,
-        });
-        const result = JSON.parse(stdout);
-        // bd ready --json returns an array directly, not { issues: [...] }
-        const tasks = (Array.isArray(result) ? result : result.issues || []) as BeadTask[];
-        allTasks.push(...tasks.map((task) => ({ task, repo })));
+        const tasks = await this.fetchBeadsTasks(repo, 'ready');
+        const filtered = tasks.filter((task) => readyStatuses.has(task.status.toLowerCase()));
+        allTasks.push(...filtered.map((task) => ({ task, repo })));
       } catch (error) {
         this.logger.debug(`No tasks from ${repo.name}: ${error}`);
       }
@@ -489,16 +488,9 @@ export class CodeAgentModule extends DarwinModule {
       if (!repo.enabled) continue;
 
       try {
-        const { stdout } = await execAsync('bd list --json', {
-          cwd: repo.path,
-        });
-        const result = JSON.parse(stdout);
-        const tasks = (Array.isArray(result) ? result : result.issues || []) as Array<Record<string, unknown>>;
+        const tasks = await this.fetchBeadsTasks(repo, 'list');
 
-        for (const raw of tasks) {
-          const task = this.normalizeTask(raw);
-          if (!task) continue;
-
+        for (const task of tasks) {
           const taskStatus = task.status.toLowerCase();
           if (statusFilter && statusFilter !== 'all' && taskStatus !== statusFilter) {
             continue;
@@ -547,13 +539,7 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     try {
-      const { stdout } = await execAsync(`bd show ${taskId} --json`, {
-        cwd: repo.path,
-      });
-      const result = JSON.parse(stdout);
-      const raw = Array.isArray(result) ? result[0] : result;
-      const task = raw ? this.normalizeTask(raw) : null;
-
+      const task = await this.loadTaskById(repo, taskId);
       if (!task) {
         return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
       }
@@ -641,6 +627,71 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   /**
+   * Fetch tasks from Beads with timeout and file fallback
+   */
+  private async fetchBeadsTasks(repo: RepoConfig, mode: 'ready' | 'list'): Promise<BeadTask[]> {
+    const command = mode === 'ready' ? 'bd ready --json' : 'bd list --json';
+    try {
+      const { stdout } = await execAsync(command, {
+        cwd: repo.path,
+        timeout: 10_000,
+        maxBuffer: 5 * 1024 * 1024,
+      });
+      const result = JSON.parse(stdout);
+      const rawTasks = (Array.isArray(result) ? result : result.issues || []) as Array<Record<string, unknown>>;
+      return rawTasks
+        .map((raw) => this.normalizeTask(raw))
+        .filter((task): task is BeadTask => !!task);
+    } catch (error) {
+      this.logger.warn(`Beads ${mode} failed in ${repo.name}, reading issues.jsonl instead: ${error}`);
+      return this.readTasksFromFile(repo);
+    }
+  }
+
+  /**
+   * Load a task by id with file fallback
+   */
+  private async loadTaskById(repo: RepoConfig, taskId: string): Promise<BeadTask | null> {
+    try {
+      const { stdout } = await execAsync(`bd show ${taskId} --json`, {
+        cwd: repo.path,
+        timeout: 10_000,
+        maxBuffer: 2 * 1024 * 1024,
+      });
+      const result = JSON.parse(stdout);
+      const raw = Array.isArray(result) ? result[0] : result;
+      return raw ? this.normalizeTask(raw) : null;
+    } catch {
+      const tasks = await this.readTasksFromFile(repo);
+      return tasks.find((task) => task.id === taskId) || null;
+    }
+  }
+
+  /**
+   * Read Beads issues.jsonl directly
+   */
+  private async readTasksFromFile(repo: RepoConfig): Promise<BeadTask[]> {
+    try {
+      const filePath = join(repo.path, '.beads', 'issues.jsonl');
+      const content = await readFile(filePath, 'utf-8');
+      return content
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return this.normalizeTask(JSON.parse(line));
+          } catch {
+            return null;
+          }
+        })
+        .filter((task): task is BeadTask => !!task);
+    } catch (error) {
+      this.logger.debug(`Failed to read issues.jsonl for ${repo.name}: ${error}`);
+      return [];
+    }
+  }
+
+  /**
    * Normalize Beads task shape
    */
   private normalizeTask(raw: Record<string, unknown>): BeadTask | null {
@@ -682,11 +733,9 @@ export class CodeAgentModule extends DarwinModule {
 
     // Search all repos for this task
     for (const repo of this.config.repos) {
-      try {
-        await execAsync(`bd show ${taskId} --json`, { cwd: repo.path });
+      const exists = await this.taskExistsInRepo(repo, taskId);
+      if (exists) {
         return repo;
-      } catch {
-        // Task not in this repo
       }
     }
 
@@ -1270,6 +1319,11 @@ export class CodeAgentModule extends DarwinModule {
 
   private escapeShellArg(value: string): string {
     return value.replace(/"/g, '\\"');
+  }
+
+  private async taskExistsInRepo(repo: RepoConfig, taskId: string): Promise<boolean> {
+    const tasks = await this.readTasksFromFile(repo);
+    return tasks.some((task) => task.id === taskId);
   }
 
   // Helper methods
