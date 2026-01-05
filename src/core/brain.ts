@@ -1,7 +1,7 @@
 /**
- * Darwin Brain - Single-model AI coordinator using Llama 3.2 3B
+ * Darwin Brain - Single-model AI coordinator using Llama 3.2 1B
  *
- * Llama 3.2 3B handles:
+ * Llama 3.2 1B handles:
  * - Tool dispatch (function calling via Ollama)
  * - Terminal observation (decides what to type in Claude sessions)
  * - Complex reasoning when needed
@@ -81,7 +81,7 @@ export interface BrainConfig {
 }
 
 const DEFAULT_CONFIG: BrainConfig = {
-  model: 'llama3.2:3b',
+  model: 'llama3.2:1b',
   ollamaUrl: 'http://localhost:11434',
   enableErrorRecovery: true,
   maxRecoveryAttempts: 2,

@@ -24,7 +24,7 @@ Darwin coordinates:
 |                 +------------+----------------+                  |
 |                              v                                   |
 |  +----------------------------------------------------------------+|
-|  |                Brain (Llama 3.2 3B via Ollama)                  ||
+|  |                Brain (Llama 3.2 1B via Ollama)                  ||
 |  |  - Tool calling and chat                                       ||
 |  |  - Terminal observation for Claude Code                        ||
 |  +----------------------------------------------------------------+|
@@ -44,7 +44,7 @@ Darwin coordinates:
 
 ## Models
 
-- Local model: `llama3.2:3b` via Ollama (default)
+- Local model: `llama3.2:1b` via Ollama (default)
 - Optional: OpenRouter for DeepSeek R1 (`deepseek/deepseek-r1`) to power `think_deep` and `research`
 
 ## Quick Start (Pi 4, headless)
@@ -69,7 +69,7 @@ sudo apt-get install -y nodejs
 curl -fsSL https://ollama.com/install.sh | sh
 sudo systemctl enable --now ollama
 
-ollama pull llama3.2:3b
+ollama pull llama3.2:1b
 ```
 
 Darwin will also attempt to pull the configured model on startup if it's missing.
@@ -234,13 +234,13 @@ npm run test:brain
 
 ## Hardware Notes
 
-- Raspberry Pi 4 (4GB) is supported for Llama 3.2 3B
+- Raspberry Pi 4 (4GB) is supported for Llama 3.2 1B
 - OpenRouter calls use network access and are optional
 - Only one Claude Code session at a time to avoid memory spikes
 
 ## Roadmap
 
-- [x] Llama 3.2 3B brain via Ollama
+- [x] Llama 3.2 1B brain via Ollama
 - [x] Monologue and proactive consciousness loop
 - [x] Code Agent with PTY control
 - [x] Web search + OpenRouter integration

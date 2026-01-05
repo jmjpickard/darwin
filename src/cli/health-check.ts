@@ -37,11 +37,11 @@ async function checkModels(): Promise<CheckResult[]> {
     const models = data.models?.map(m => m.name) || [];
 
     // Check brain model
-    const hasBrainModel = models.some(m => m.includes('llama3.2:3b'));
+    const hasBrainModel = models.some(m => m.includes('llama3.2:1b'));
     results.push({
-      name: 'Llama 3.2 3B (brain)',
+      name: 'Llama 3.2 1B (brain)',
       ok: hasBrainModel,
-      message: hasBrainModel ? 'Available' : 'Not found. Darwin will pull on startup, or run: ollama pull llama3.2:3b',
+      message: hasBrainModel ? 'Available' : 'Not found. Darwin will pull on startup, or run: ollama pull llama3.2:1b',
     });
   } catch {
     results.push({ name: 'Models', ok: false, message: 'Could not check (Ollama not running)' });
@@ -56,7 +56,7 @@ async function testBrainModel(): Promise<CheckResult> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama3.2:3b',
+        model: 'llama3.2:1b',
         prompt: 'Say "ready" if you can hear me.',
         stream: false,
         options: { num_predict: 10 },
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
   }
 
   // 3. Test brain model (only if available)
-  if (results.find(r => r.name.includes('Llama 3.2 3B') && r.ok)) {
+  if (results.find(r => r.name.includes('Llama 3.2 1B') && r.ok)) {
     console.log('\n3. Testing brain model...');
     const testResult = await testBrainModel();
     results.push(testResult);

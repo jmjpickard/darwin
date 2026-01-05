@@ -7,7 +7,7 @@
  * - Energy monitoring
  * - Security
  *
- * Powered by Llama 3.2 3B via Ollama
+ * Powered by Llama 3.2 1B via Ollama
  */
 
 import { DarwinBrain, BrainConfig } from './brain.js';
