@@ -15,6 +15,27 @@ export interface RepoConfig {
   testCommand?: string; // Override default test command
 }
 
+export interface ConsciousnessUserConfig {
+  /** How often to "think" in ms (default: 30000) */
+  tickIntervalMs?: number;
+  /** Emit idle thoughts when nothing happening */
+  idleThinkingEnabled?: boolean;
+}
+
+export interface OpenRouterUserConfig {
+  /** OpenRouter API key */
+  apiKey?: string;
+  /** Default model (default: deepseek/deepseek-r1) */
+  defaultModel?: string;
+}
+
+export interface WebSearchUserConfig {
+  /** Enable web search (default: true) */
+  enabled?: boolean;
+  /** Maximum results per search (default: 5) */
+  maxResults?: number;
+}
+
 export interface DarwinUserConfig {
   repos: RepoConfig[];
   defaults: {
@@ -23,6 +44,12 @@ export interface DarwinUserConfig {
     maxSessionMinutes: number;
     usageThreshold: number;
   };
+  /** Consciousness loop configuration */
+  consciousness?: ConsciousnessUserConfig;
+  /** OpenRouter configuration for frontier model access */
+  openrouter?: OpenRouterUserConfig;
+  /** Web search configuration */
+  webSearch?: WebSearchUserConfig;
 }
 
 const DEFAULT_USER_CONFIG: DarwinUserConfig = {
@@ -93,6 +120,18 @@ export async function createTemplateConfig(): Promise<void> {
       maxSessionMinutes: 30,
       usageThreshold: 80,
     },
+    consciousness: {
+      tickIntervalMs: 30000,
+      idleThinkingEnabled: true,
+    },
+    openrouter: {
+      apiKey: '', // Set your OpenRouter API key here
+      defaultModel: 'deepseek/deepseek-r1',
+    },
+    webSearch: {
+      enabled: true,
+      maxResults: 5,
+    },
   };
 
   const content = JSON.stringify(template, null, 2);
@@ -142,7 +181,37 @@ function validateConfig(config: unknown): DarwinUserConfig {
     if (typeof d.usageThreshold === 'number') defaults.usageThreshold = d.usageThreshold;
   }
 
-  return { repos, defaults };
+  // Validate consciousness config
+  let consciousness: ConsciousnessUserConfig | undefined;
+  if (cfg.consciousness && typeof cfg.consciousness === 'object') {
+    const c = cfg.consciousness as Record<string, unknown>;
+    consciousness = {
+      tickIntervalMs: typeof c.tickIntervalMs === 'number' ? c.tickIntervalMs : undefined,
+      idleThinkingEnabled: typeof c.idleThinkingEnabled === 'boolean' ? c.idleThinkingEnabled : undefined,
+    };
+  }
+
+  // Validate openrouter config
+  let openrouter: OpenRouterUserConfig | undefined;
+  if (cfg.openrouter && typeof cfg.openrouter === 'object') {
+    const o = cfg.openrouter as Record<string, unknown>;
+    openrouter = {
+      apiKey: typeof o.apiKey === 'string' ? o.apiKey : undefined,
+      defaultModel: typeof o.defaultModel === 'string' ? o.defaultModel : undefined,
+    };
+  }
+
+  // Validate webSearch config
+  let webSearch: WebSearchUserConfig | undefined;
+  if (cfg.webSearch && typeof cfg.webSearch === 'object') {
+    const w = cfg.webSearch as Record<string, unknown>;
+    webSearch = {
+      enabled: typeof w.enabled === 'boolean' ? w.enabled : undefined,
+      maxResults: typeof w.maxResults === 'number' ? w.maxResults : undefined,
+    };
+  }
+
+  return { repos, defaults, consciousness, openrouter, webSearch };
 }
 
 /**

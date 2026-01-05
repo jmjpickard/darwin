@@ -15,6 +15,11 @@ import { ModuleLoader, DarwinModule, ModuleConfig } from './module.js';
 import { EventBus, eventBus, DarwinEvent } from './event-bus.js';
 import { Logger, setLogLevel, LogLevel } from './logger.js';
 import { DarwinUserConfig } from './config.js';
+import { Monologue, getMonologue } from './monologue.js';
+import { Consciousness, ConsciousnessConfig } from './consciousness.js';
+import { SubAgentManager } from './sub-agents.js';
+import { OpenRouterClient } from '../integrations/openrouter.js';
+import { WebSearch } from '../integrations/web-search.js';
 
 export interface DarwinConfig {
   brain: Partial<BrainConfig>;
@@ -22,6 +27,8 @@ export interface DarwinConfig {
   logLevel: LogLevel;
   observeEvents: boolean; // Should Brain observe all events?
   userConfig?: DarwinUserConfig; // User config from ~/.darwin/config.json
+  consciousness: Partial<ConsciousnessConfig>;
+  consciousnessEnabled: boolean; // Enable proactive consciousness loop
 }
 
 const DEFAULT_CONFIG: DarwinConfig = {
@@ -29,6 +36,8 @@ const DEFAULT_CONFIG: DarwinConfig = {
   modules: {},
   logLevel: 'info',
   observeEvents: true,
+  consciousness: {},
+  consciousnessEnabled: true,
 };
 
 export class Darwin {
@@ -37,6 +46,11 @@ export class Darwin {
   private modules: ModuleLoader;
   private eventBus: EventBus;
   private logger: Logger;
+  private monologue: Monologue;
+  private consciousness: Consciousness;
+  private subAgents: SubAgentManager;
+  private openRouter: OpenRouterClient | null = null;
+  private webSearch: WebSearch;
   private isRunning = false;
   private isPausedState = false;
 
@@ -45,9 +59,173 @@ export class Darwin {
     setLogLevel(this.config.logLevel);
 
     this.logger = new Logger('Darwin');
+    this.monologue = getMonologue({ consoleEnabled: false }); // CLI controls console output
     this.brain = new DarwinBrain(this.config.brain);
     this.modules = new ModuleLoader(this.brain);
     this.eventBus = eventBus;
+    this.subAgents = new SubAgentManager(this.monologue);
+    this.webSearch = new WebSearch(this.config.userConfig?.webSearch);
+
+    // Initialize OpenRouter if API key is configured
+    const openRouterKey = this.config.userConfig?.openrouter?.apiKey;
+    if (openRouterKey) {
+      this.openRouter = new OpenRouterClient({
+        apiKey: openRouterKey,
+        defaultModel: this.config.userConfig?.openrouter?.defaultModel,
+      });
+    }
+
+    this.consciousness = new Consciousness(
+      this.brain,
+      this.monologue,
+      this.eventBus,
+      {
+        ...this.config.consciousness,
+        ...this.config.userConfig?.consciousness,
+      }
+    );
+
+    // Register consciousness action handlers
+    this.setupConsciousnessActions();
+
+    // Register integration tools with Brain
+    this.registerIntegrationTools();
+  }
+
+  /**
+   * Set up action handlers for consciousness to invoke
+   */
+  private setupConsciousnessActions(): void {
+    this.consciousness.registerAction('check_tasks', async () => {
+      // Will be handled by CodeAgent when available
+      this.monologue.act('Checking task queue...');
+      // TODO: Trigger CodeAgent to check and potentially start tasks
+    });
+
+    this.consciousness.registerAction('check_home', async () => {
+      this.monologue.act('Checking home status...');
+      // TODO: Trigger HomeAutomation to report status
+    });
+
+    this.consciousness.registerAction('alert_user', async (params) => {
+      const message = params?.message as string || 'Attention needed';
+      this.monologue.alert(message);
+    });
+
+    this.consciousness.registerAction('research', async (params) => {
+      const topic = params?.topic as string;
+      if (!topic) return;
+
+      this.monologue.act(`Starting research: ${topic.slice(0, 50)}...`);
+      // This will spawn a research sub-agent
+      if (this.openRouter) {
+        const result = await this.openRouter.research(topic, 'quick');
+        this.monologue.result(`Research complete: ${result.summary.slice(0, 100)}...`);
+      } else {
+        this.monologue.alert('OpenRouter not configured - cannot research');
+      }
+    });
+  }
+
+  /**
+   * Register integration tools with the Brain
+   */
+  private registerIntegrationTools(): void {
+    // Web search tool
+    this.brain.registerTool(
+      'web_search',
+      'Search the internet for information on a topic',
+      {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query' },
+          num_results: { type: 'number', description: 'Number of results (default 5)' },
+        },
+        required: ['query'],
+      },
+      async (args) => {
+        const query = args.query as string;
+        const numResults = args.num_results as number | undefined;
+
+        this.monologue.act(`Searching: ${query}`);
+        const results = await this.webSearch.search(query, numResults);
+        this.monologue.result(`Found ${results.length} results`);
+
+        return results;
+      }
+    );
+
+    // Web fetch tool
+    this.brain.registerTool(
+      'web_fetch',
+      'Fetch and read a web page',
+      {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL to fetch' },
+        },
+        required: ['url'],
+      },
+      async (args) => {
+        const url = args.url as string;
+
+        this.monologue.act(`Fetching: ${url}`);
+        const content = await this.webSearch.fetchPage(url);
+
+        return { content: content.slice(0, 5000) }; // Limit for context
+      }
+    );
+
+    // Only register OpenRouter tools if configured
+    if (this.openRouter) {
+      // Deep thinking tool
+      this.brain.registerTool(
+        'think_deep',
+        'Use DeepSeek R1 for complex reasoning (use when Qwen struggles)',
+        {
+          type: 'object',
+          properties: {
+            question: { type: 'string', description: 'Question or problem to think about' },
+            context: { type: 'string', description: 'Optional context to consider' },
+          },
+          required: ['question'],
+        },
+        async (args) => {
+          const question = args.question as string;
+          const context = args.context as string | undefined;
+
+          this.monologue.act('Thinking deeply with DeepSeek R1...');
+          const result = await this.openRouter!.thinkDeep(question, context);
+          this.monologue.result('Deep thinking complete');
+
+          return { response: result };
+        }
+      );
+
+      // Research tool
+      this.brain.registerTool(
+        'research',
+        'Research a topic using DeepSeek R1',
+        {
+          type: 'object',
+          properties: {
+            topic: { type: 'string', description: 'Topic to research' },
+            depth: { type: 'string', enum: ['quick', 'thorough'], description: 'Research depth' },
+          },
+          required: ['topic'],
+        },
+        async (args) => {
+          const topic = args.topic as string;
+          const depth = (args.depth as 'quick' | 'thorough') || 'quick';
+
+          this.monologue.act(`Researching: ${topic} (${depth})`);
+          const result = await this.openRouter!.research(topic, depth);
+          this.monologue.result(`Research complete (${result.confidence} confidence)`);
+
+          return result;
+        }
+      );
+    }
   }
 
   /**
@@ -72,13 +250,16 @@ export class Darwin {
    */
   async start(): Promise<void> {
     this.logger.info('Starting Darwin...');
+    this.monologue.act('Waking up...');
 
     // Check brain health
     const health = await this.brain.checkHealth();
     if (!health.healthy) {
+      this.monologue.alert(`Brain not available: ${health.error}`);
       throw new Error(health.error || `Model ${health.model} not available. Run: ollama pull ${health.model}`);
     }
     this.logger.info(`   Model (${health.model}): OK`);
+    this.monologue.observe(`Brain online (${health.model})`);
 
     // Set up event observation
     if (this.config.observeEvents) {
@@ -92,9 +273,17 @@ export class Darwin {
     this.isRunning = true;
     this.logger.info('Darwin running');
 
+    const moduleNames = this.modules.getModuleNames();
+    this.monologue.status(`Ready. Modules: ${moduleNames.join(', ')}`);
+
+    // Start consciousness loop if enabled
+    if (this.config.consciousnessEnabled) {
+      this.consciousness.start();
+    }
+
     // Emit startup event
     this.eventBus.publish('darwin', 'started', {
-      modules: this.modules.getModuleNames(),
+      modules: moduleNames,
     });
   }
 
@@ -103,12 +292,17 @@ export class Darwin {
    */
   async stop(): Promise<void> {
     this.logger.info('Stopping Darwin...');
+    this.monologue.act('Shutting down...');
     this.isRunning = false;
+
+    // Stop consciousness first
+    this.consciousness.stop();
 
     await this.modules.stopAll();
     await this.brain.shutdown();
 
     this.eventBus.publish('darwin', 'stopped', {});
+    this.monologue.status('Goodbye.');
     this.logger.info('Darwin stopped');
   }
 
@@ -257,6 +451,34 @@ export class Darwin {
   getModules(): ModuleLoader {
     return this.modules;
   }
+
+  /**
+   * Get the monologue (for CLI to subscribe to thoughts)
+   */
+  getMonologue(): Monologue {
+    return this.monologue;
+  }
+
+  /**
+   * Get the consciousness (for CLI to control)
+   */
+  getConsciousness(): Consciousness {
+    return this.consciousness;
+  }
+
+  /**
+   * Get the sub-agent manager
+   */
+  getSubAgents(): SubAgentManager {
+    return this.subAgents;
+  }
+
+  /**
+   * Check if OpenRouter is configured
+   */
+  hasOpenRouter(): boolean {
+    return this.openRouter !== null;
+  }
 }
 
 // Keep old name as alias for backwards compatibility
@@ -264,7 +486,11 @@ export { Darwin as Homebase };
 
 // Re-export for convenience
 export { DarwinBrain, DarwinModule, eventBus, Logger };
+export { Monologue, getMonologue } from './monologue.js';
+export { Consciousness } from './consciousness.js';
 export type { ModuleConfig } from './module.js';
 export type { Tool, ToolCall } from './brain.js';
 export type { ModuleStatus } from './module.js';
 export type { DarwinEvent } from './event-bus.js';
+export type { Thought, ThoughtType, Priority } from './monologue.js';
+export type { ConsciousnessConfig, ConsciousnessState } from './consciousness.js';

@@ -23,6 +23,15 @@ export {
   containsDangerousPattern,
 } from './core/terminal-types.js';
 
+// New: Consciousness and Monologue
+export { Monologue, getMonologue, resetMonologue } from './core/monologue.js';
+export { Consciousness } from './core/consciousness.js';
+export { SubAgentManager } from './core/sub-agents.js';
+
+// Integrations
+export { OpenRouterClient, getOpenRouterClient, resetOpenRouterClient } from './integrations/openrouter.js';
+export { WebSearch, getWebSearch, resetWebSearch } from './integrations/web-search.js';
+
 // Modules
 export { CodeAgentModule } from './modules/code-agent.js';
 export { HomeAutomationModule } from './modules/home-automation.js';
@@ -33,7 +42,13 @@ export type { BrainConfig, Tool, ToolCall, ChatMessage, ChatResponse } from './c
 export type { ModuleConfig, ModuleStatus } from './core/module.js';
 export type { DarwinEvent, HomebaseEvent } from './core/event-bus.js';
 export type { LogLevel } from './core/logger.js';
-export type { DarwinUserConfig, RepoConfig } from './core/config.js';
+export type {
+  DarwinUserConfig,
+  RepoConfig,
+  ConsciousnessUserConfig,
+  OpenRouterUserConfig,
+  WebSearchUserConfig,
+} from './core/config.js';
 export type {
   TerminalBackend,
   TerminalState,
@@ -45,3 +60,10 @@ export type {
   TerminalEvents,
   ActionResult,
 } from './core/terminal-types.js';
+
+// New types
+export type { Thought, ThoughtType, Priority, MonologueConfig } from './core/monologue.js';
+export type { ConsciousnessConfig, ConsciousnessState } from './core/consciousness.js';
+export type { SubAgent, SubAgentType, SubAgentStatus, SubAgentConfig } from './core/sub-agents.js';
+export type { OpenRouterConfig, ResearchResult } from './integrations/openrouter.js';
+export type { WebSearchConfig, SearchResult } from './integrations/web-search.js';

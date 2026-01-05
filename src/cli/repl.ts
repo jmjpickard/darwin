@@ -1,27 +1,32 @@
 /**
  * Darwin Interactive REPL
  *
- * Chat with Darwin, manage tasks, attach to live Claude sessions.
+ * A streaming interface that shows Darwin's internal monologue
+ * while allowing you to interject with questions/commands at any time.
  *
- * Built-in commands (direct, reliable):
+ * The monologue streams above, your input stays at the bottom.
+ * Just start typing to talk to Darwin.
+ *
+ * Built-in commands:
  *   help     - Show available commands
- *   status   - Show current status
+ *   status   - What's Darwin doing right now?
+ *   tasks    - Show ready tasks
  *   pause    - Stop picking up new tasks
  *   resume   - Resume picking up tasks
- *   attach   - Hook into live Claude stdout
- *   logs     - Show recent activity
+ *   attach   - Watch live Claude output (Ctrl+C to detach)
+ *   thoughts - Show recent thoughts
+ *   logs     - Recent activity events
+ *   clear    - Start fresh conversation
  *   quit     - Exit Darwin
  *
- * Natural language (via Brain):
- *   "what are you working on?"
- *   "add task to synapse: implement email"
- *   "how many tasks are queued?"
+ * Or just chat naturally - Darwin understands natural language.
  */
 
 import * as readline from 'readline';
 import { Darwin } from '../core/darwin.js';
 import { CodeAgentModule } from '../modules/code-agent.js';
 import { eventBus } from '../core/event-bus.js';
+import type { Thought } from '../core/monologue.js';
 
 type ReplMode = 'normal' | 'attached';
 
@@ -30,16 +35,26 @@ interface ReplContext {
   rl: readline.Interface;
   mode: ReplMode;
   outputHandler: ((line: string) => void) | null;
+  thoughtHandler: ((thought: Thought) => void) | null;
+  monologueEnabled: boolean;
 }
 
+// ANSI escape codes for cursor manipulation
+const SAVE_CURSOR = '\x1b[s';
+const RESTORE_CURSOR = '\x1b[u';
+const CLEAR_LINE = '\x1b[2K';
+const MOVE_UP = '\x1b[1A';
+const DIM = '\x1b[2m';
+const RESET = '\x1b[0m';
+
 /**
- * Start the interactive REPL
+ * Start the interactive REPL with streaming monologue
  */
 export async function startRepl(darwin: Darwin): Promise<void> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: 'darwin> ',
+    prompt: `${DIM}>${RESET} `,
   });
 
   const ctx: ReplContext = {
@@ -47,6 +62,8 @@ export async function startRepl(darwin: Darwin): Promise<void> {
     rl,
     mode: 'normal',
     outputHandler: null,
+    thoughtHandler: null,
+    monologueEnabled: true,
   };
 
   // Wire up pause check to CodeAgent
@@ -55,7 +72,10 @@ export async function startRepl(darwin: Darwin): Promise<void> {
     codeAgent.setPauseCheck(() => darwin.isPaused());
   }
 
-  console.log('\nType "help" for commands, or chat naturally.\n');
+  // Subscribe to monologue
+  setupMonologueStream(ctx);
+
+  console.log('\nDarwin is thinking... Type to chat, "help" for commands.\n');
   rl.prompt();
 
   rl.on('line', async (line) => {
@@ -66,11 +86,17 @@ export async function startRepl(darwin: Darwin): Promise<void> {
       return;
     }
 
+    // Temporarily disable monologue while handling input
+    const wasEnabled = ctx.monologueEnabled;
+    ctx.monologueEnabled = false;
+
     try {
       await handleInput(ctx, input);
     } catch (error) {
       console.error('Error:', error);
     }
+
+    ctx.monologueEnabled = wasEnabled;
 
     if (ctx.mode === 'normal') {
       rl.prompt();
@@ -92,6 +118,36 @@ export async function startRepl(darwin: Darwin): Promise<void> {
       rl.close();
     }
   });
+}
+
+/**
+ * Set up the monologue stream to show Darwin's thoughts
+ */
+function setupMonologueStream(ctx: ReplContext): void {
+  const monologue = ctx.darwin.getMonologue();
+
+  // Enable console output on the monologue
+  monologue.setConsoleEnabled(true);
+
+  // Subscribe to get thoughts for potential filtering/formatting
+  ctx.thoughtHandler = (thought: Thought) => {
+    if (!ctx.monologueEnabled) return;
+
+    // The monologue itself handles console output
+    // This handler is for any additional processing we might want
+
+    // Re-display prompt after thought (keeps input at bottom)
+    // Use setImmediate to avoid interfering with the thought output
+    setImmediate(() => {
+      if (ctx.mode === 'normal') {
+        // Clear current line and re-show prompt
+        process.stdout.write(CLEAR_LINE + '\r');
+        ctx.rl.prompt(true);
+      }
+    });
+  };
+
+  monologue.subscribe(ctx.thoughtHandler);
 }
 
 /**
@@ -128,6 +184,11 @@ async function handleInput(ctx: ReplContext, input: string): Promise<void> {
     return;
   }
 
+  if (lower === 'thoughts') {
+    showThoughts(ctx);
+    return;
+  }
+
   if (lower === 'logs') {
     showLogs(ctx);
     return;
@@ -141,6 +202,20 @@ async function handleInput(ctx: ReplContext, input: string): Promise<void> {
   if (lower === 'clear' || lower === 'new' || lower === 'reset') {
     ctx.darwin.clearChat();
     console.log('Conversation cleared. Fresh start!\n');
+    return;
+  }
+
+  if (lower === 'mute' || lower === 'quiet') {
+    ctx.monologueEnabled = false;
+    ctx.darwin.getMonologue().setConsoleEnabled(false);
+    console.log('Monologue muted. Type "unmute" to resume.\n');
+    return;
+  }
+
+  if (lower === 'unmute' || lower === 'verbose') {
+    ctx.monologueEnabled = true;
+    ctx.darwin.getMonologue().setConsoleEnabled(true);
+    console.log('Monologue enabled.\n');
     return;
   }
 
@@ -167,20 +242,24 @@ async function handleInput(ctx: ReplContext, input: string): Promise<void> {
  */
 function showHelp(): void {
   console.log(`
+${DIM}Darwin's thoughts stream above. Just type to chat.${RESET}
+
 Commands:
   status       - What's Darwin doing right now?
   tasks        - Show ready tasks
+  thoughts     - Show recent thoughts
   pause        - Stop picking up new tasks
   resume       - Resume picking up tasks
   attach       - Watch live Claude output (Ctrl+C to detach)
-  logs         - Recent activity
+  logs         - Recent activity events
+  mute/unmute  - Toggle monologue stream
   clear        - Start fresh conversation
   quit         - Exit Darwin
 
 Or just chat naturally:
   "create a new task for fixing the login bug"
-  "which repos do I have?"
-  "start working on bd-abc123"
+  "research the best approach for implementing X"
+  "what are you thinking about?"
 `);
 }
 
@@ -188,10 +267,34 @@ Or just chat naturally:
  * Show current status
  */
 async function showStatus(ctx: ReplContext): Promise<void> {
-  // Use chat for a conversational status update
+  const consciousness = ctx.darwin.getConsciousness();
+  const state = consciousness.getState();
+
+  console.log(`\n${DIM}Consciousness:${RESET} ${state}`);
+
+  // Also ask Darwin for a conversational status
   const response = await ctx.darwin.chat('What are you currently working on? Give me a quick status update.');
   console.log('');
   console.log(response.message);
+  console.log('');
+}
+
+/**
+ * Show recent thoughts
+ */
+function showThoughts(ctx: ReplContext): void {
+  const monologue = ctx.darwin.getMonologue();
+  const thoughts = monologue.getRecent(15);
+
+  if (thoughts.length === 0) {
+    console.log('No recent thoughts.');
+    return;
+  }
+
+  console.log('\nRecent thoughts:');
+  for (const thought of thoughts) {
+    console.log(monologue.format(thought));
+  }
   console.log('');
 }
 
@@ -211,6 +314,10 @@ function attachToSession(ctx: ReplContext): void {
     console.log('No active Claude session to attach to.');
     return;
   }
+
+  // Disable monologue while attached
+  ctx.monologueEnabled = false;
+  ctx.darwin.getMonologue().setConsoleEnabled(false);
 
   console.log(`\n[Attached to ${session.taskId} - Ctrl+C to detach]\n`);
 
@@ -243,6 +350,10 @@ function detachFromSession(ctx: ReplContext): void {
     codeAgent.offOutput(ctx.outputHandler);
     ctx.outputHandler = null;
   }
+
+  // Re-enable monologue
+  ctx.monologueEnabled = true;
+  ctx.darwin.getMonologue().setConsoleEnabled(true);
 
   console.log('\n[Detached]\n');
   ctx.mode = 'normal';
