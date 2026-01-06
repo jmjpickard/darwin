@@ -86,7 +86,14 @@ sudo apt-get install -y gh
 gh auth login
 
 curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+
+# Optional: Codex CLI (ARM64)
+npm install -g @openai/codex
+# Follow Codex CLI auth/setup prompts after install
 ```
+
+If you plan to use the Codex backend, install the Codex CLI on the Pi and authenticate.
+Ensure the `codex` command is on your PATH (you can override the command in `codeAgent.agentCommands`).
 
 ### 5. Install Darwin
 

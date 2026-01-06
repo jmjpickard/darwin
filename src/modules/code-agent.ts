@@ -969,28 +969,52 @@ export class CodeAgentModule extends DarwinModule {
       const { command, args } = this.getAgentCommand(selectedAgent);
       await terminal.start(command, args);
 
+      const outputSeen = await terminal.waitForOutput(/[\s\S]/, 5000);
+      if (!outputSeen.found) {
+        this.logger.warn('No output from agent after start, sending newline');
+        await terminal.executeAction({ type: 'enter', reason: 'Kick prompt' });
+      }
+
       // Wait for Claude to be ready
       this.logger.info('Waiting for Claude prompt...');
-      const ready = await terminal.waitForState(['ready', 'limit_reached', 'error'], 30000);
+      const ready = await terminal.waitForState(['ready', 'question', 'limit_reached', 'error'], 30000);
 
       if (!ready.reached) {
+        const observation = terminal.getObservation();
         const startError = this.detectStartupError(terminal.getFullBuffer());
+        const tail = observation.recentOutput.trim().slice(-400);
         this.logger.error('Claude did not reach ready state');
         await this.stopCurrentSession('Failed to start', 'start_error');
         return {
           success: false,
-          message: startError || 'Claude Code failed to start',
+          message: startError || `Claude Code failed to start. Last output: ${tail || '(none)'}`,
         };
       }
 
-      if (ready.state === 'limit_reached') {
+      let startState = ready.state;
+
+      if (startState === 'question') {
+        const followup = await terminal.waitForState(['ready', 'limit_reached', 'error'], 30000);
+        if (!followup.reached) {
+          const observation = terminal.getObservation();
+          const tail = observation.recentOutput.trim().slice(-400);
+          await this.stopCurrentSession('Failed to start', 'start_error');
+          return {
+            success: false,
+            message: `Claude Code stalled after prompt. Last output: ${tail || '(none)'}`,
+          };
+        }
+        startState = followup.state;
+      }
+
+      if (startState === 'limit_reached') {
         const recovered = await this.tryRecoverFromLimit(terminal, selectedAgent);
         if (!recovered) {
           return { success: false, message: 'Claude usage limit reached, waiting for reset' };
         }
       }
 
-      if (ready.state === 'error') {
+      if (startState === 'error') {
         const startError = this.detectStartupError(terminal.getFullBuffer());
         await this.stopCurrentSession('Terminal error', 'start_error');
         return { success: false, message: startError || 'Claude Code failed to start' };
@@ -1189,6 +1213,9 @@ export class CodeAgentModule extends DarwinModule {
     if (question.match(/apply.*changes/i)) return { type: 'answer', content: 'y', reason: 'Allow changes' };
     if (question.match(/\[y\/n\]/i) && question.match(/proceed|continue|apply|create/i)) {
       return { type: 'answer', content: 'y', reason: 'Proceed with safe action' };
+    }
+    if (question.match(/press\s+enter|hit\s+enter|press\s+return/i)) {
+      return { type: 'enter', reason: 'Acknowledge prompt' };
     }
 
     // Menu-style prompts (arrow-key selection)

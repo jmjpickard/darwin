@@ -150,6 +150,9 @@ export const DEFAULT_PATTERNS: TerminalPatterns = {
     /create.*\?/i,              // create file?
     /delete.*\?/i,              // delete file?
     /overwrite.*\?/i,           // overwrite?
+    /press\s+enter/i,           // press enter to continue
+    /hit\s+enter/i,             // hit enter to continue
+    /press\s+return/i,          // press return
     /use (?:the )?arrow keys/i, // menu selection prompts
     /select (?:an|a) option/i,  // select an option
     /choose (?:an|a) option/i,  // choose an option
