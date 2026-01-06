@@ -1233,26 +1233,13 @@ export class CodeAgentModule extends DarwinModule {
         }
         const prompt = await ensurePrompt();
         this.logger.info(reason);
-        // Claude Code requires TWO enters to submit:
-        // 1. First enter goes to multi-line input mode
-        // 2. Second enter on empty line submits
+        // Use paste_submit: paste brackets + CR in a single atomic write.
+        // Testing showed this is the cleanest submission method - immediate
+        // submission without entering multi-line mode.
         await terminal.executeAction({
-          type: "type",
+          type: "paste_submit",
           content: prompt,
-          reason: `${reason} (type prompt)`,
-        });
-        await terminal.executeAction({
-          type: "enter",
-          reason: `${reason} (first enter - multi-line)`,
-        });
-        await terminal.executeAction({
-          type: "wait",
-          waitMs: 100,
-          reason: "Brief pause before submit",
-        });
-        await terminal.executeAction({
-          type: "enter",
-          reason: `${reason} (second enter - submit)`,
+          reason: `${reason} (paste + submit)`,
         });
 
         const progressed = await terminal.waitForState(

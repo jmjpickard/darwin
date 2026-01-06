@@ -10,6 +10,8 @@
     "test:brain": "tsx src/cli/test-brain.ts",
     "test:health": "tsx src/cli/health-check.ts",
     "test:terminal": "tsx src/cli/test-terminal.ts",
+    "test:enter": "tsx src/cli/test-enter.ts",
+    "test:submit": "tsx src/cli/test-submit.ts",
     "terminald": "tsx src/cli/terminald.ts"
   },
   "dependencies": {

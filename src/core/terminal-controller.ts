@@ -716,6 +716,13 @@ export class TerminalController extends EventEmitter {
 
   private write(data: string): void {
     if (this.ptyProcess) {
+      // Debug: log what we're writing
+      const escaped = data
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n')
+        .replace(/\x1b/g, '\\x1b');
+      const truncated = escaped.length > 100 ? escaped.slice(0, 100) + '...' : escaped;
+      this.logger.debug(`PTY write (${data.length} bytes): ${truncated}`);
       this.ptyProcess.write(data);
     }
   }
