@@ -975,6 +975,37 @@ export class CodeAgentModule extends DarwinModule {
         await terminal.executeAction({ type: 'enter', reason: 'Kick prompt' });
       }
 
+      let promptCache: string | null = null;
+      const ensurePrompt = async (): Promise<string> => {
+        if (!promptCache) {
+          promptCache = await this.generatePrompt(repo, task, branchName);
+        }
+        return promptCache;
+      };
+
+      const sendPrompt = async (reason: string, clearBuffer = true) => {
+        if (clearBuffer) {
+          terminal.clearBuffer();
+        }
+        const prompt = await ensurePrompt();
+        this.logger.info(reason);
+        await terminal.executeAction({ type: 'send', content: prompt, reason });
+
+        eventBus.publish('code', 'task_started', {
+          taskId,
+          title: task.title,
+          repo: repo.name,
+          branch: branchName,
+          agent: selectedAgent,
+        });
+
+        return {
+          success: true,
+          message: `Started ${taskId} on branch ${branchName} (${repo.name})`,
+          state,
+        };
+      };
+
       // Wait for Claude to be ready
       this.logger.info('Waiting for Claude prompt...');
       const ready = await terminal.waitForState(['ready', 'question', 'limit_reached', 'error'], 30000);
@@ -984,11 +1015,16 @@ export class CodeAgentModule extends DarwinModule {
         const startError = this.detectStartupError(terminal.getFullBuffer());
         const tail = observation.recentOutput.trim().slice(-400);
         this.logger.error('Claude did not reach ready state');
-        await this.stopCurrentSession('Failed to start', 'start_error');
-        return {
-          success: false,
-          message: startError || `Claude Code failed to start. Last output: ${tail || '(none)'}`,
-        };
+        if (startError) {
+          await this.stopCurrentSession('Failed to start', 'start_error');
+          return {
+            success: false,
+            message: startError || `Claude Code failed to start. Last output: ${tail || '(none)'}`,
+          };
+        }
+
+        this.logger.warn('Claude prompt not detected, sending task prompt anyway');
+        return await sendPrompt('Sending task prompt without detected prompt', false);
       }
 
       let startState = ready.state;
@@ -998,11 +1034,17 @@ export class CodeAgentModule extends DarwinModule {
         if (!followup.reached) {
           const observation = terminal.getObservation();
           const tail = observation.recentOutput.trim().slice(-400);
-          await this.stopCurrentSession('Failed to start', 'start_error');
-          return {
-            success: false,
-            message: `Claude Code stalled after prompt. Last output: ${tail || '(none)'}`,
-          };
+          const startError = this.detectStartupError(terminal.getFullBuffer());
+          if (startError) {
+            await this.stopCurrentSession('Failed to start', 'start_error');
+            return {
+              success: false,
+              message: startError || `Claude Code failed to start. Last output: ${tail || '(none)'}`,
+            };
+          }
+
+          this.logger.warn('Claude prompt still not detected after question, sending task prompt');
+          return await sendPrompt('Sending task prompt after unanswered startup prompt', false);
         }
         startState = followup.state;
       }
@@ -1026,26 +1068,7 @@ export class CodeAgentModule extends DarwinModule {
         return { success: false, message: startError };
       }
 
-      terminal.clearBuffer();
-      this.logger.info('Claude is ready, sending task prompt...');
-
-      // Generate and send the task prompt
-      const prompt = await this.generatePrompt(repo, task, branchName);
-      await terminal.executeAction({ type: 'send', content: prompt });
-
-      eventBus.publish('code', 'task_started', {
-        taskId,
-        title: task.title,
-        repo: repo.name,
-        branch: branchName,
-        agent: selectedAgent,
-      });
-
-      return {
-        success: true,
-        message: `Started ${taskId} on branch ${branchName} (${repo.name})`,
-        state,
-      };
+      return await sendPrompt('Claude is ready, sending task prompt...');
     } catch (error) {
       this.logger.error(`Failed to start Claude: ${error}`);
       await this.stopCurrentSession('Start error', 'start_error');
