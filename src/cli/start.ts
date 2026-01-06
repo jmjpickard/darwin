@@ -11,6 +11,7 @@
 import { Darwin } from '../core/darwin.js';
 import { CodeAgentModule } from '../modules/code-agent.js';
 import { HomeAutomationModule } from '../modules/home-automation.js';
+import { SchedulerModule } from '../modules/scheduler.js';
 import { LogLevel } from '../core/logger.js';
 import { loadConfig, getConfigPath, getEnabledRepos, DarwinUserConfig } from '../core/config.js';
 
@@ -134,6 +135,9 @@ async function main(): Promise<void> {
       repos: enabledRepos,
       autoStart: args.auto,
       defaults: userConfig.defaults,
+    })
+    .use(SchedulerModule, {
+      enabled: true,
     })
     .use(HomeAutomationModule, {
       enabled: true,

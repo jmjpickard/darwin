@@ -8,6 +8,7 @@
  * - code_get_ready_tasks: Get tasks ready to work on across all repos
  * - code_list_tasks: List/search tasks across repos (optionally include closed)
  * - code_show_task: Show details for a task
+ * - code_get_task_state: Get repo/branch state for a task (detect existing work)
  * - code_start_task: Start Claude working on a task
  * - code_get_status: Get current agent status
  * - code_stop_task: Stop current task
@@ -66,6 +67,25 @@ interface TaskQuery {
   status?: string;
   query?: string;
   includeClosed?: boolean;
+}
+
+type TaskStartMode = 'auto' | 'continue' | 'reset' | 'inspect';
+
+interface TaskRepoState {
+  taskId: string;
+  repo: string;
+  beadsStatus: string;
+  baseRef: string;
+  currentBranch: string;
+  taskBranch?: string;
+  branchExists: boolean;
+  candidateBranches: string[];
+  dirty: boolean;
+  modified: number;
+  untracked: number;
+  ahead: number;
+  behind: number;
+  lastCommit?: { hash: string; subject: string; date: string };
 }
 
 interface ClaudeSession {
@@ -254,10 +274,10 @@ export class CodeAgentModule extends DarwinModule {
       }
     );
 
-    // Start working on a task
+    // Get task repo state
     this.registerTool(
-      'code_start_task',
-      'Start Claude Code working on a specific Beads task',
+      'code_get_task_state',
+      'Get repo/branch state for a Beads task (detect existing work)',
       {
         type: 'object',
         properties: {
@@ -269,7 +289,32 @@ export class CodeAgentModule extends DarwinModule {
       async (args) => {
         const taskId = args.taskId as string;
         const repoName = args.repo as string | undefined;
-        return this.startTask(taskId, repoName);
+        return this.getTaskState(taskId, repoName);
+      }
+    );
+
+    // Start working on a task
+    this.registerTool(
+      'code_start_task',
+      'Start Claude Code working on a specific Beads task',
+      {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
+          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
+          mode: {
+            type: 'string',
+            enum: ['auto', 'continue', 'reset', 'inspect'],
+            description: 'Auto = prompt if existing work; continue = resume; reset = hard reset branch; inspect = status only',
+          },
+        },
+        required: ['taskId'],
+      },
+      async (args) => {
+        const taskId = args.taskId as string;
+        const repoName = args.repo as string | undefined;
+        const mode = (args.mode as TaskStartMode | undefined) || 'auto';
+        return this.startTask(taskId, repoName, mode);
       }
     );
 
@@ -439,7 +484,7 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     const { task, repo } = tasks[0];
-    await this.startTask(task.id, repo.name);
+    await this.startTask(task.id, repo.name, 'continue');
   }
 
   /**
@@ -551,6 +596,31 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   /**
+   * Get repo/branch state for a task
+   */
+  private async getTaskState(
+    taskId: string,
+    repoName?: string
+  ): Promise<{ success: boolean; message: string; state?: TaskRepoState }> {
+    const repo = await this.findRepo(taskId, repoName);
+    if (!repo) {
+      return { success: false, message: `Could not find repo for task ${taskId}` };
+    }
+
+    const task = await this.loadTaskById(repo, taskId);
+    if (!task) {
+      return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
+    }
+
+    const state = await this.getTaskRepoState(repo, task);
+    return {
+      success: true,
+      message: `Found state for ${taskId} in ${repo.name}`,
+      state,
+    };
+  }
+
+  /**
    * Update a task status and/or notes
    */
   private async updateTask(args: {
@@ -572,7 +642,7 @@ export class CodeAgentModule extends DarwinModule {
       return this.closeTask(args.taskId, repo.name, 'Closed via Darwin');
     }
 
-    const parts: string[] = [`bd update ${args.taskId}`];
+    const parts: string[] = [`update ${args.taskId}`];
     if (args.status) {
       parts.push(`--status ${args.status}`);
     }
@@ -581,7 +651,7 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     try {
-      await execAsync(parts.join(' '), { cwd: repo.path });
+      await this.execBeads(repo, parts.join(' '), { timeoutMs: 10_000 });
 
       eventBus.publish('code', 'task_updated', {
         taskId: args.taskId,
@@ -609,9 +679,10 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     try {
-      await execAsync(
-        `bd close ${taskId} --reason "${this.escapeShellArg(reason)}"`,
-        { cwd: repo.path }
+      await this.execBeads(
+        repo,
+        `close ${taskId} --reason "${this.escapeShellArg(reason)}"`,
+        { timeoutMs: 10_000 }
       );
 
       eventBus.publish('code', 'task_closed', {
@@ -630,11 +701,10 @@ export class CodeAgentModule extends DarwinModule {
    * Fetch tasks from Beads with timeout and file fallback
    */
   private async fetchBeadsTasks(repo: RepoConfig, mode: 'ready' | 'list'): Promise<BeadTask[]> {
-    const command = mode === 'ready' ? 'bd ready --json' : 'bd list --json';
+    const command = mode === 'ready' ? 'ready --json' : 'list --json';
     try {
-      const { stdout } = await execAsync(command, {
-        cwd: repo.path,
-        timeout: 10_000,
+      const { stdout } = await this.execBeads(repo, command, {
+        timeoutMs: 10_000,
         maxBuffer: 5 * 1024 * 1024,
       });
       const result = JSON.parse(stdout);
@@ -653,9 +723,8 @@ export class CodeAgentModule extends DarwinModule {
    */
   private async loadTaskById(repo: RepoConfig, taskId: string): Promise<BeadTask | null> {
     try {
-      const { stdout } = await execAsync(`bd show ${taskId} --json`, {
-        cwd: repo.path,
-        timeout: 10_000,
+      const { stdout } = await this.execBeads(repo, `show ${taskId} --json`, {
+        timeoutMs: 10_000,
         maxBuffer: 2 * 1024 * 1024,
       });
       const result = JSON.parse(stdout);
@@ -747,8 +816,17 @@ export class CodeAgentModule extends DarwinModule {
    */
   private async startTask(
     taskId: string,
-    repoName?: string
-  ): Promise<{ success: boolean; message: string }> {
+    repoName?: string,
+    mode: TaskStartMode = 'auto'
+  ): Promise<{
+    success: boolean;
+    message: string;
+    state?: TaskRepoState;
+    actions?: {
+      continue: { tool: string; args: Record<string, unknown> };
+      reset: { tool: string; args: Record<string, unknown> };
+    };
+  }> {
     if (this.currentSession) {
       return { success: false, message: 'Session already active' };
     }
@@ -767,19 +845,45 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     // Get task details
-    let task: BeadTask;
-    try {
-      const { stdout } = await execAsync(`bd show ${taskId} --json`, {
-        cwd: repo.path,
-      });
-      const result = JSON.parse(stdout);
-      // bd show --json returns an array with one element
-      task = Array.isArray(result) ? result[0] : result;
-      if (!task) {
-        return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
-      }
-    } catch {
+    const task = await this.loadTaskById(repo, taskId);
+    if (!task) {
       return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
+    }
+
+    let state = await this.getTaskRepoState(repo, task);
+
+    if (mode === 'inspect') {
+      return {
+        success: true,
+        message: `Task state for ${taskId} in ${repo.name}`,
+        state,
+      };
+    }
+
+    const needsDecision = this.shouldRequireResumeDecision(task, state);
+    if (mode === 'auto' && needsDecision) {
+      return {
+        success: false,
+        message: `Existing work detected for ${taskId} in ${repo.name}. Choose continue or reset.`,
+        state,
+        actions: {
+          continue: { tool: 'code_start_task', args: { taskId, repo: repo.name, mode: 'continue' } },
+          reset: { tool: 'code_start_task', args: { taskId, repo: repo.name, mode: 'reset' } },
+        },
+      };
+    }
+
+    if (mode === 'reset') {
+      try {
+        await this.resetTaskBranch(repo, task, state);
+        state = await this.getTaskRepoState(repo, task);
+      } catch (error) {
+        return {
+          success: false,
+          message: `Failed to reset ${taskId} in ${repo.name}: ${error}`,
+          state,
+        };
+      }
     }
 
     this.logger.info(`Starting task: ${taskId} - ${task.title} (${repo.name})`);
@@ -787,6 +891,7 @@ export class CodeAgentModule extends DarwinModule {
 
     // Create feature branch
     const branchName = await this.createBranch(repo, taskId, task.title);
+    state = await this.getTaskRepoState(repo, task);
 
     // Update Beads status
     await this.updateTaskStatus(repo, taskId, 'in_progress');
@@ -858,7 +963,11 @@ export class CodeAgentModule extends DarwinModule {
         branch: branchName,
       });
 
-      return { success: true, message: `Started ${taskId} on branch ${branchName} (${repo.name})` };
+      return {
+        success: true,
+        message: `Started ${taskId} on branch ${branchName} (${repo.name})`,
+        state,
+      };
     } catch (error) {
       this.logger.error(`Failed to start Claude: ${error}`);
       await this.stopCurrentSession('Start error', 'start_error');
@@ -1080,9 +1189,10 @@ export class CodeAgentModule extends DarwinModule {
       ? `Usage limit reached, will retry after ${resetAt.toISOString()}`
       : 'Usage limit reached';
 
-    await execAsync(
-      `bd update ${task.id} --notes "${note.replace(/"/g, '\\"')}"`,
-      { cwd: repo.path }
+    await this.execBeads(
+      repo,
+      `update ${task.id} --notes "${note.replace(/"/g, '\\"')}"`,
+      { timeoutMs: 10_000 }
     ).catch(() => {});
 
     eventBus.publish('code', 'limit_reached', {
@@ -1118,7 +1228,7 @@ export class CodeAgentModule extends DarwinModule {
     const prUrl = await this.createPR(repo, task);
 
     // Close Beads task
-    await execAsync(`bd close ${task.id} --reason "PR: ${prUrl}"`, { cwd: repo.path });
+    await this.execBeads(repo, `close ${task.id} --reason "PR: ${prUrl}"`, { timeoutMs: 10_000 });
 
     eventBus.publish('code', 'task_completed', { taskId: task.id, repo: repo.name, prUrl });
   }
@@ -1133,9 +1243,10 @@ export class CodeAgentModule extends DarwinModule {
     await execAsync('git reset --hard HEAD && git clean -fd', { cwd: repo.path }).catch(() => {});
 
     // Update Beads
-    await execAsync(
-      `bd update ${task.id} --status blocked --notes "${error.replace(/"/g, '\\"').slice(0, 200)}"`,
-      { cwd: repo.path }
+    await this.execBeads(
+      repo,
+      `update ${task.id} --status blocked --notes "${error.replace(/"/g, '\\"').slice(0, 200)}"`,
+      { timeoutMs: 10_000 }
     ).catch(() => {});
 
     eventBus.publish('code', 'task_failed', { taskId: task.id, repo: repo.name, error });
@@ -1287,9 +1398,10 @@ export class CodeAgentModule extends DarwinModule {
     const priority = args.priority || 2;
 
     try {
-      const { stdout } = await execAsync(
-        `bd create "${args.title}" -t ${type} -p ${priority} --json`,
-        { cwd: repo.path }
+      const { stdout } = await this.execBeads(
+        repo,
+        `create "${args.title}" -t ${type} -p ${priority} --json`,
+        { timeoutMs: 10_000 }
       );
       const result = JSON.parse(stdout);
       const taskId = result.id || result.issue?.id;
@@ -1319,6 +1431,53 @@ export class CodeAgentModule extends DarwinModule {
 
   private escapeShellArg(value: string): string {
     return value.replace(/"/g, '\\"');
+  }
+
+  private shouldRetryNoDb(error: unknown): boolean {
+    const message = String(error).toLowerCase();
+    if (message.includes('no beads database found')) {
+      return true;
+    }
+    if (message.includes('beads database') && message.includes('not found')) {
+      return true;
+    }
+    if (message.includes('timed out') || message.includes('timeout')) {
+      return true;
+    }
+    if (typeof error === 'object' && error !== null) {
+      const maybe = error as { killed?: boolean; signal?: string };
+      if (maybe.killed && maybe.signal) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async execBeads(
+    repo: RepoConfig,
+    args: string,
+    options?: { timeoutMs?: number; maxBuffer?: number; allowNoDb?: boolean }
+  ): Promise<{ stdout: string; stderr: string }> {
+    const timeout = options?.timeoutMs ?? 10_000;
+    const allowNoDb = options?.allowNoDb ?? true;
+    const maxBuffer = options?.maxBuffer;
+    const run = (command: string) =>
+      execAsync(command, {
+        cwd: repo.path,
+        timeout,
+        maxBuffer,
+      });
+
+    try {
+      return await run(`bd ${args}`);
+    } catch (error) {
+      if (!allowNoDb || !this.shouldRetryNoDb(error)) {
+        throw error;
+      }
+
+      this.logger.warn(`Beads command failed in ${repo.name}, retrying with --no-db: bd ${args}`);
+      return run(`bd --no-db ${args}`);
+    }
   }
 
   private async taskExistsInRepo(repo: RepoConfig, taskId: string): Promise<boolean> {
@@ -1377,7 +1536,7 @@ export class CodeAgentModule extends DarwinModule {
     this.limitResumeTask = null;
 
     if (resume) {
-      void this.startTask(resume.taskId, resume.repoName).catch((error) => {
+      void this.startTask(resume.taskId, resume.repoName, 'continue').catch((error) => {
         this.logger.error(`Failed to resume task ${resume.taskId}: ${error}`);
       });
       return;
@@ -1388,12 +1547,211 @@ export class CodeAgentModule extends DarwinModule {
     });
   }
 
-  private async createBranch(repo: RepoConfig, taskId: string, title: string): Promise<string> {
+  private buildBranchName(taskId: string, title: string): string {
     const safeName = title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .slice(0, 40);
-    const branch = `${taskId}-${safeName}`;
+    return `${taskId}-${safeName}`;
+  }
+
+  private shouldRequireResumeDecision(task: BeadTask, state: TaskRepoState): boolean {
+    const status = task.status.toLowerCase();
+    const hasWork =
+      state.branchExists && (state.dirty || state.untracked > 0 || state.ahead > 0);
+    return hasWork || status === 'in_progress';
+  }
+
+  private async getTaskRepoState(repo: RepoConfig, task: BeadTask): Promise<TaskRepoState> {
+    const baseRef = await this.getDefaultBranchRef(repo);
+    const currentBranch = await this.getCurrentBranchLabel(repo);
+    const branchInfo = await this.resolveTaskBranch(repo, task);
+    const status = await this.getRepoStatus(repo);
+    const { ahead, behind } = branchInfo.branch
+      ? await this.getAheadBehind(repo, baseRef, branchInfo.branch)
+      : { ahead: 0, behind: 0 };
+    const lastCommit = branchInfo.branch ? await this.getLastCommit(repo, branchInfo.branch) : undefined;
+
+    return {
+      taskId: task.id,
+      repo: repo.name || repo.path,
+      beadsStatus: task.status,
+      baseRef,
+      currentBranch,
+      taskBranch: branchInfo.branch,
+      branchExists: Boolean(branchInfo.branch),
+      candidateBranches: branchInfo.candidates,
+      dirty: status.dirty,
+      modified: status.modified,
+      untracked: status.untracked,
+      ahead,
+      behind,
+      lastCommit,
+    };
+  }
+
+  private async resolveTaskBranch(
+    repo: RepoConfig,
+    task: BeadTask
+  ): Promise<{ branch?: string; candidates: string[] }> {
+    const expected = this.buildBranchName(task.id, task.title);
+    const branches = await this.listTaskBranches(repo, task.id);
+    const normalized = new Set(branches);
+
+    if (normalized.has(expected)) {
+      return { branch: expected, candidates: branches };
+    }
+
+    if (branches.length > 0) {
+      return { branch: branches[0], candidates: branches };
+    }
+
+    if (await this.branchExists(repo, expected)) {
+      return { branch: expected, candidates: [expected] };
+    }
+
+    return { branch: undefined, candidates: [] };
+  }
+
+  private async listTaskBranches(repo: RepoConfig, taskId: string): Promise<string[]> {
+    try {
+      const { stdout } = await execAsync(
+        `git branch --list "${this.escapeShellArg(taskId)}-*"`,
+        { cwd: repo.path }
+      );
+      return stdout
+        .split('\n')
+        .map((line) => line.replace(/^\* /, '').trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  private async branchExists(repo: RepoConfig, branch: string): Promise<boolean> {
+    try {
+      await execAsync(
+        `git show-ref --verify --quiet "refs/heads/${this.escapeShellArg(branch)}"`,
+        { cwd: repo.path }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async getDefaultBranchRef(repo: RepoConfig): Promise<string> {
+    try {
+      const { stdout } = await execAsync('git symbolic-ref --short refs/remotes/origin/HEAD', {
+        cwd: repo.path,
+      });
+      const ref = stdout.trim();
+      if (ref) return ref;
+    } catch {
+      // Ignore and fall back.
+    }
+
+    const candidates = ['main', 'master'];
+    for (const candidate of candidates) {
+      if (await this.branchExists(repo, candidate)) {
+        return candidate;
+      }
+    }
+
+    const current = await this.getCurrentBranchLabel(repo);
+    return current !== '(unknown)' ? current : 'main';
+  }
+
+  private async getCurrentBranchLabel(repo: RepoConfig): Promise<string> {
+    try {
+      const { stdout } = await execAsync('git branch --show-current', { cwd: repo.path });
+      const branch = stdout.trim();
+      if (branch) return branch;
+    } catch {
+      // Ignore and fall back.
+    }
+
+    try {
+      const { stdout } = await execAsync('git rev-parse --short HEAD', { cwd: repo.path });
+      const hash = stdout.trim();
+      if (hash) return `(detached ${hash})`;
+    } catch {
+      // Ignore and fall back.
+    }
+
+    return '(unknown)';
+  }
+
+  private async getRepoStatus(
+    repo: RepoConfig
+  ): Promise<{ dirty: boolean; modified: number; untracked: number }> {
+    try {
+      const { stdout } = await execAsync('git status --porcelain', { cwd: repo.path });
+      const lines = stdout.split('\n').filter(Boolean);
+      const untracked = lines.filter((line) => line.startsWith('??')).length;
+      const modified = lines.length - untracked;
+      return { dirty: lines.length > 0, modified, untracked };
+    } catch {
+      return { dirty: false, modified: 0, untracked: 0 };
+    }
+  }
+
+  private async getAheadBehind(
+    repo: RepoConfig,
+    baseRef: string,
+    branch: string
+  ): Promise<{ ahead: number; behind: number }> {
+    try {
+      const range = `${baseRef}...${branch}`;
+      const { stdout } = await execAsync(
+        `git rev-list --left-right --count "${this.escapeShellArg(range)}"`,
+        { cwd: repo.path }
+      );
+      const [behindRaw, aheadRaw] = stdout.trim().split(/\s+/);
+      return {
+        ahead: Number(aheadRaw) || 0,
+        behind: Number(behindRaw) || 0,
+      };
+    } catch {
+      return { ahead: 0, behind: 0 };
+    }
+  }
+
+  private async getLastCommit(
+    repo: RepoConfig,
+    ref: string
+  ): Promise<{ hash: string; subject: string; date: string } | undefined> {
+    try {
+      const { stdout } = await execAsync(
+        `git log -1 --pretty=format:%H|%s|%cI "${this.escapeShellArg(ref)}"`,
+        { cwd: repo.path }
+      );
+      const [hash, subject, date] = stdout.trim().split('|');
+      if (!hash) return undefined;
+      return { hash, subject, date };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async resetTaskBranch(repo: RepoConfig, task: BeadTask, state: TaskRepoState): Promise<void> {
+    const branch = state.taskBranch || this.buildBranchName(task.id, task.title);
+    const baseRef = state.baseRef || (await this.getDefaultBranchRef(repo));
+    const safeBranch = this.escapeShellArg(branch);
+    const safeBase = this.escapeShellArg(baseRef);
+
+    if (await this.branchExists(repo, branch)) {
+      await execAsync(`git checkout "${safeBranch}"`, { cwd: repo.path });
+    } else {
+      await execAsync(`git checkout -b "${safeBranch}" "${safeBase}"`, { cwd: repo.path });
+    }
+
+    await execAsync(`git reset --hard "${safeBase}"`, { cwd: repo.path });
+    await execAsync('git clean -fd', { cwd: repo.path });
+  }
+
+  private async createBranch(repo: RepoConfig, taskId: string, title: string): Promise<string> {
+    const branch = this.buildBranchName(taskId, title);
 
     try {
       // Try creating a new branch
@@ -1427,7 +1785,11 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   private async updateTaskStatus(repo: RepoConfig, taskId: string, status: string): Promise<void> {
-    await execAsync(`bd update ${taskId} --status ${status}`, { cwd: repo.path });
+    try {
+      await this.execBeads(repo, `update ${taskId} --status ${status}`, { timeoutMs: 10_000 });
+    } catch (error) {
+      this.logger.warn(`Failed to update ${taskId} in ${repo.name}: ${error}`);
+    }
   }
 
   private async runTests(

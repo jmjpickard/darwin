@@ -35,6 +35,7 @@ export { WebSearch, getWebSearch, resetWebSearch } from './integrations/web-sear
 // Modules
 export { CodeAgentModule } from './modules/code-agent.js';
 export { HomeAutomationModule } from './modules/home-automation.js';
+export { SchedulerModule } from './modules/scheduler.js';
 
 // Types
 export type { DarwinConfig } from './core/darwin.js';

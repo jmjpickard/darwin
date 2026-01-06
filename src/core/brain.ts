@@ -1177,6 +1177,17 @@ What action should I take? Respond with ONLY a JSON object.`;
   }
 
   /**
+   * Execute a tool directly (for scheduled or internal calls)
+   */
+  async callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    context = 'Scheduled tool'
+  ): Promise<{ tool: string; result?: unknown; error?: string; recovery?: string }> {
+    return this.executeToolWithRecovery(toolName, args, context);
+  }
+
+  /**
    * Get current provider
    */
   getProvider(): BrainProvider {
