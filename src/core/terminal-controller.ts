@@ -305,6 +305,18 @@ export class TerminalController extends EventEmitter {
           }
           break;
 
+        case 'paste_submit':
+          // Paste and submit in ONE atomic write - paste + CR in single call
+          // This ensures the enter is processed immediately after paste
+          if (action.content) {
+            const PASTE_START = '\x1b[200~';
+            const PASTE_END = '\x1b[201~';
+            // Combine paste sequence with CR in single write
+            this.write(PASTE_START + action.content + PASTE_END + '\r');
+            this.setState('waiting_response');
+          }
+          break;
+
         case 'enter':
           // Use \r (CR) - what a real keyboard sends for Enter key
           // The PTY/tty driver handles translation to \n for the application

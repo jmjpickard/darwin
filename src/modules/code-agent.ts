@@ -1233,20 +1233,26 @@ export class CodeAgentModule extends DarwinModule {
         }
         const prompt = await ensurePrompt();
         this.logger.info(reason);
-        // Use bracketed paste mode to properly send multi-line prompt
+        // Claude Code requires TWO enters to submit:
+        // 1. First enter goes to multi-line input mode
+        // 2. Second enter on empty line submits
         await terminal.executeAction({
-          type: "paste",
+          type: "type",
           content: prompt,
-          reason: `${reason} (paste)`,
+          reason: `${reason} (type prompt)`,
+        });
+        await terminal.executeAction({
+          type: "enter",
+          reason: `${reason} (first enter - multi-line)`,
         });
         await terminal.executeAction({
           type: "wait",
           waitMs: 100,
-          reason: "Allow paste to settle",
+          reason: "Brief pause before submit",
         });
         await terminal.executeAction({
           type: "enter",
-          reason: `${reason} (submit)`,
+          reason: `${reason} (second enter - submit)`,
         });
 
         const progressed = await terminal.waitForState(
