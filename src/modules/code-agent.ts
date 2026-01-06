@@ -1040,11 +1040,6 @@ export class CodeAgentModule extends DarwinModule {
 
       if (selectedAgent === 'claude') {
         inlinePrompt = true;
-        const hasPermissionMode = agentArgs.includes('--permission-mode') ||
-          agentArgs.some((arg) => arg.startsWith('--permission-mode='));
-        if (!hasPermissionMode) {
-          agentArgs.push('--permission-mode', 'acceptEdits');
-        }
         const hasPromptArg = agentArgs.includes('-p') ||
           agentArgs.includes('--prompt') ||
           agentArgs.some((arg) => arg.startsWith('--prompt='));
