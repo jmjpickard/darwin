@@ -535,30 +535,14 @@ export class TerminalController extends EventEmitter {
   }
 
   private analyzeOutput(data: string): void {
-    const fullRecent = this.getRecentOutput();
-
-    // Check for limit reached
-    if (this.patterns.limitReached.test(fullRecent)) {
-      if (this.state !== 'limit_reached') {
-        const resetMatch = fullRecent.match(this.patterns.limitResetTime);
-        if (resetMatch) {
-          this.detectedLimitResetTime = this.parseResetTime(resetMatch[1]);
-        }
-        this.setState('limit_reached');
-        (this as TerminalController & { emit(event: 'limitReached', time: Date | undefined): boolean }).emit(
-          'limitReached',
-          this.detectedLimitResetTime || undefined
-        );
-      }
-      return;
-    }
+    const recent = this.getRecentLines(12).join('\n');
 
     // Check for questions
     for (const pattern of this.patterns.questions) {
-      const match = fullRecent.match(pattern);
+      const match = recent.match(pattern);
       if (match) {
         // Extract the question context (line containing the match)
-        const lines = fullRecent.split('\n');
+        const lines = recent.split('\n');
         const questionLine = lines.find(line => pattern.test(line));
         if (questionLine) {
           this.detectedQuestion = questionLine.trim();
@@ -570,9 +554,25 @@ export class TerminalController extends EventEmitter {
     }
 
     // Check for prompt (ready state)
-    if (this.isPromptVisible(fullRecent)) {
+    if (this.isPromptVisible(recent)) {
       if (this.state !== 'ready') {
         this.setState('ready');
+      }
+      return;
+    }
+
+    // Check for limit reached (avoid stale matches when prompt is visible)
+    if (this.patterns.limitReached.test(recent)) {
+      if (this.state !== 'limit_reached') {
+        const resetMatch = recent.match(this.patterns.limitResetTime);
+        if (resetMatch) {
+          this.detectedLimitResetTime = this.parseResetTime(resetMatch[1]);
+        }
+        this.setState('limit_reached');
+        (this as TerminalController & { emit(event: 'limitReached', time: Date | undefined): boolean }).emit(
+          'limitReached',
+          this.detectedLimitResetTime || undefined
+        );
       }
       return;
     }
@@ -595,6 +595,15 @@ export class TerminalController extends EventEmitter {
       return this.outputBuffer;
     }
     return this.outputBuffer.slice(-this.config.observationWindowSize);
+  }
+
+  private getRecentLines(count: number): string[] {
+    const recent = this.getRecentOutput();
+    const lines = recent.split('\n');
+    if (lines.length <= count) {
+      return lines;
+    }
+    return lines.slice(-count);
   }
 
   private parseResetTime(timeStr: string): Date {

@@ -132,10 +132,10 @@ export interface TerminalPatterns {
  */
 export const DEFAULT_PATTERNS: TerminalPatterns = {
   // Claude prompt is typically ">" at start of line
-  prompt: /^>\s*$/m,
+  prompt: /^\s*>\s*$/m,
 
   // Limit messages
-  limitReached: /(?:limit|quota|rate).*(?:reached|exceeded|hit)/i,
+  limitReached: /(?:^|\n).*?(?:usage limit reached|claude.*limit.*(?:reached|exceeded|hit)|limit reached.*(?:resets?|try again)|quota.*(?:reached|exceeded|hit)|rate limit.*(?:resets?|try again))/im,
 
   // Question patterns that require response
   questions: [
@@ -150,6 +150,9 @@ export const DEFAULT_PATTERNS: TerminalPatterns = {
     /create.*\?/i,              // create file?
     /delete.*\?/i,              // delete file?
     /overwrite.*\?/i,           // overwrite?
+    /use (?:the )?arrow keys/i, // menu selection prompts
+    /select (?:an|a) option/i,  // select an option
+    /choose (?:an|a) option/i,  // choose an option
   ],
 
   // Multi-choice questions (numbered options)

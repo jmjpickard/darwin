@@ -92,6 +92,13 @@ Config file (${getConfigPath()}):
     "openrouter": {
       "apiKey": "sk-...",
       "defaultModel": "deepseek/deepseek-r1"
+    },
+    "codeAgent": {
+      "agent": "claude",
+      "agentCommands": {
+        "claude": { "command": "claude" },
+        "codex": { "command": "codex" }
+      }
     }
   }
 
@@ -116,6 +123,7 @@ async function main(): Promise<void> {
   // Load config
   const userConfig = await loadConfig(args.config);
   const enabledRepos = getEnabledRepos(userConfig);
+  const codeAgentConfig = userConfig.codeAgent || {};
 
   if (enabledRepos.length === 0) {
     console.log('No enabled repositories configured.');
@@ -135,6 +143,7 @@ async function main(): Promise<void> {
       repos: enabledRepos,
       autoStart: args.auto,
       defaults: userConfig.defaults,
+      ...codeAgentConfig,
     })
     .use(SchedulerModule, {
       enabled: true,

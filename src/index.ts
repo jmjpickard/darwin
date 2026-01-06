@@ -49,6 +49,7 @@ export type {
   ConsciousnessUserConfig,
   OpenRouterUserConfig,
   WebSearchUserConfig,
+  CodeAgentUserConfig,
 } from './core/config.js';
 export type {
   TerminalBackend,

@@ -45,6 +45,16 @@ export interface WebSearchUserConfig {
   maxResults?: number;
 }
 
+export interface CodeAgentUserConfig {
+  /** Default agent backend (claude or codex) */
+  agent?: 'claude' | 'codex';
+  /** Override CLI commands */
+  agentCommands?: {
+    claude?: { command: string; args?: string[] };
+    codex?: { command: string; args?: string[] };
+  };
+}
+
 export interface DarwinUserConfig {
   repos: RepoConfig[];
   defaults: {
@@ -61,6 +71,8 @@ export interface DarwinUserConfig {
   openrouter?: OpenRouterUserConfig;
   /** Web search configuration */
   webSearch?: WebSearchUserConfig;
+  /** Code agent configuration */
+  codeAgent?: CodeAgentUserConfig;
 }
 
 const DEFAULT_USER_CONFIG: DarwinUserConfig = {
@@ -153,6 +165,13 @@ export async function createTemplateConfig(): Promise<void> {
       enabled: true,
       maxResults: 5,
     },
+    codeAgent: {
+      agent: 'claude',
+      agentCommands: {
+        claude: { command: 'claude' },
+        codex: { command: 'codex' },
+      },
+    },
   };
 
   const content = JSON.stringify(template, null, 2);
@@ -244,7 +263,38 @@ function validateConfig(config: unknown): DarwinUserConfig {
     };
   }
 
-  return { repos, defaults, brain, consciousness, openrouter, webSearch };
+  // Validate code agent config
+  let codeAgent: CodeAgentUserConfig | undefined;
+  if (cfg.codeAgent && typeof cfg.codeAgent === 'object') {
+    const c = cfg.codeAgent as Record<string, unknown>;
+    const agent = c.agent === 'codex' ? 'codex' : c.agent === 'claude' ? 'claude' : undefined;
+    const commands = c.agentCommands && typeof c.agentCommands === 'object'
+      ? (c.agentCommands as Record<string, unknown>)
+      : undefined;
+
+    const claudeCommand = commands?.claude && typeof commands.claude === 'object'
+      ? (commands.claude as Record<string, unknown>)
+      : undefined;
+    const codexCommand = commands?.codex && typeof commands.codex === 'object'
+      ? (commands.codex as Record<string, unknown>)
+      : undefined;
+
+    codeAgent = {
+      agent,
+      agentCommands: {
+        claude: {
+          command: typeof claudeCommand?.command === 'string' ? claudeCommand.command : 'claude',
+          args: Array.isArray(claudeCommand?.args) ? (claudeCommand!.args as string[]) : undefined,
+        },
+        codex: {
+          command: typeof codexCommand?.command === 'string' ? codexCommand.command : 'codex',
+          args: Array.isArray(codexCommand?.args) ? (codexCommand!.args as string[]) : undefined,
+        },
+      },
+    };
+  }
+
+  return { repos, defaults, brain, consciousness, openrouter, webSearch, codeAgent };
 }
 
 /**
