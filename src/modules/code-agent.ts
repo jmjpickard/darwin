@@ -1251,13 +1251,13 @@ export class CodeAgentModule extends DarwinModule {
 
   private isMenuPrompt(question: string, observation: TerminalObservation): boolean {
     const lower = question.toLowerCase();
-    if (lower.includes('arrow') || lower.includes('select') || lower.includes('choose')) {
-      return true;
-    }
-
     const output = observation.recentOutput.toLowerCase();
-    if (output.includes('arrow keys') || output.includes('select an option') || output.includes('choose an option')) {
-      return true;
+    const hasMenuHint = /(?:arrow keys|select (?:an|a) option|select one|choose (?:an|a) option|choose one)/i.test(
+      `${lower}\n${output}`
+    );
+
+    if (!hasMenuHint) {
+      return false;
     }
 
     const menu = this.parseMenuOptions(observation.recentOutput);

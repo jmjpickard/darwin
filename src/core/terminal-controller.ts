@@ -561,24 +561,27 @@ export class TerminalController extends EventEmitter {
       return;
     }
 
-    // Check for menu-style prompts
-    const menuLines = recent
-      .split('\n')
-      .filter((line) =>
-        /^\s*[>]\s+\S+/.test(line) ||
-        /^\s*\([xX ]\)\s+\S+/.test(line) ||
-        /^\s*\[[xX ]\]\s+\S+/.test(line) ||
-        /^\s*\d+[.)]\s+\S+/.test(line)
-      );
+    // Check for menu-style prompts only when we see explicit selection hints
+    const hasMenuHint = /(?:arrow keys|select (?:an|a) option|select one|choose (?:an|a) option|choose one)/i.test(recent);
+    if (hasMenuHint) {
+      const menuLines = recent
+        .split('\n')
+        .filter((line) =>
+          /^\s*[>]\s+\S+/.test(line) ||
+          /^\s*\([xX ]\)\s+\S+/.test(line) ||
+          /^\s*\[[xX ]\]\s+\S+/.test(line) ||
+          /^\s*\d+[.)]\s+\S+/.test(line)
+        );
 
-    if (menuLines.length >= 2 && this.state !== 'ready') {
-      this.detectedQuestion = menuLines[0].trim();
-      this.setState('question');
-      (this as TerminalController & { emit(event: 'question', q: string): boolean }).emit(
-        'question',
-        this.detectedQuestion
-      );
-      return;
+      if (menuLines.length >= 2 && this.state !== 'ready') {
+        this.detectedQuestion = menuLines[0].trim();
+        this.setState('question');
+        (this as TerminalController & { emit(event: 'question', q: string): boolean }).emit(
+          'question',
+          this.detectedQuestion
+        );
+        return;
+      }
     }
 
     // Check for limit reached (avoid stale matches when prompt is visible)
