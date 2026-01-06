@@ -37,6 +37,7 @@ export type TerminalState =
  */
 export type TerminalActionType =
   | 'type'      // Type text (without pressing enter)
+  | 'paste'     // Paste text using bracketed paste mode
   | 'enter'     // Press enter (submit current line)
   | 'send'      // Type text and press enter (combined)
   | 'ctrl_c'    // Send interrupt signal

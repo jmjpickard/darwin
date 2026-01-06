@@ -295,22 +295,33 @@ export class TerminalController extends EventEmitter {
           }
           break;
 
+        case 'paste':
+          // Use bracketed paste mode - wraps content with escape sequences
+          // This tells the receiving application that this is pasted text
+          if (action.content) {
+            const PASTE_START = '\x1b[200~';
+            const PASTE_END = '\x1b[201~';
+            this.write(PASTE_START + action.content + PASTE_END);
+          }
+          break;
+
         case 'enter':
-          // Use \n (LF) - standard Unix line terminator that readline expects
-          this.write('\n');
+          // Use \r (CR) - what a real keyboard sends for Enter key
+          // The PTY/tty driver handles translation to \n for the application
+          this.write('\r');
           this.setState('waiting_response');
           break;
 
         case 'send':
           if (action.content) {
-            this.write(action.content + '\n');
+            this.write(action.content + '\r');
             this.setState('waiting_response');
           }
           break;
 
         case 'answer':
           if (action.content) {
-            this.write(action.content + '\n');
+            this.write(action.content + '\r');
             this.detectedQuestion = null;
             this.setState('waiting_response');
           }

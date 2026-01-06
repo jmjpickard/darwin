@@ -1233,14 +1233,15 @@ export class CodeAgentModule extends DarwinModule {
         }
         const prompt = await ensurePrompt();
         this.logger.info(reason);
+        // Use bracketed paste mode to properly send multi-line prompt
         await terminal.executeAction({
-          type: "type",
+          type: "paste",
           content: prompt,
-          reason: `${reason} (type)`,
+          reason: `${reason} (paste)`,
         });
         await terminal.executeAction({
           type: "wait",
-          waitMs: 50,
+          waitMs: 100,
           reason: "Allow paste to settle",
         });
         await terminal.executeAction({
@@ -1266,23 +1267,23 @@ export class CodeAgentModule extends DarwinModule {
             this.logger.warn(
               "Claude still idle after paste, pressing enter again"
             );
-            // Primary enter now uses \n, try \r as fallback
+            // Try sending another CR (enter uses \r)
             await terminal.executeAction({
-              type: "type",
-              content: "\r",
-              reason: "Submit pasted prompt (CR fallback)",
+              type: "enter",
+              reason: "Submit pasted prompt (retry CR)",
             });
             // Wait a bit more for the retry to take effect
             const retryResult = await terminal.waitForState(
               ["processing", "question", "limit_reached", "error"],
               3000
             );
-            // If still stuck, try another enter (which uses \n)
+            // If still stuck, try LF as last resort
             if (!retryResult.reached) {
               this.logger.warn("Still stuck, trying LF");
               await terminal.executeAction({
-                type: "enter",
-                reason: "Submit pasted prompt (LF)",
+                type: "type",
+                content: "\n",
+                reason: "Submit pasted prompt (LF fallback)",
               });
               await terminal.waitForState(
                 ["processing", "question", "limit_reached", "error"],
