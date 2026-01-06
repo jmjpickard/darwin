@@ -18,20 +18,24 @@
  * - code_list_repos: List configured repositories
  */
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import { readFile } from 'fs/promises';
-import { join } from 'path';
-import { DarwinModule, ModuleConfig } from '../core/module.js';
-import { DarwinBrain } from '../core/brain.js';
-import { eventBus } from '../core/event-bus.js';
-import { RepoConfig } from '../core/config.js';
-import { TerminalController } from '../core/terminal-controller.js';
-import { TerminalAction, TerminalObservation, TerminalState } from '../core/terminal-types.js';
+import { exec } from "child_process";
+import { promisify } from "util";
+import { readFile } from "fs/promises";
+import { join } from "path";
+import { DarwinModule, ModuleConfig } from "../core/module.js";
+import { DarwinBrain } from "../core/brain.js";
+import { eventBus } from "../core/event-bus.js";
+import { RepoConfig } from "../core/config.js";
+import { TerminalController } from "../core/terminal-controller.js";
+import {
+  TerminalAction,
+  TerminalObservation,
+  TerminalState,
+} from "../core/terminal-types.js";
 
 const execAsync = promisify(exec);
 
-type CodeAgentBackend = 'claude' | 'codex';
+type CodeAgentBackend = "claude" | "codex";
 
 interface AgentCommand {
   command: string;
@@ -78,7 +82,7 @@ interface TaskQuery {
   includeClosed?: boolean;
 }
 
-type TaskStartMode = 'auto' | 'continue' | 'reset' | 'inspect';
+type TaskStartMode = "auto" | "continue" | "reset" | "inspect";
 
 interface TaskRepoState {
   taskId: string;
@@ -109,28 +113,28 @@ interface ClaudeSession {
 }
 
 type OutputHandler = (line: string) => void;
-type SessionEndReason = 'limit' | 'stopped' | 'timeout' | 'start_error';
+type SessionEndReason = "limit" | "stopped" | "timeout" | "start_error";
 
 const DEFAULT_CONFIG: CodeAgentConfig = {
   enabled: true,
   repos: [],
   defaults: {
-    testCommand: 'npm test',
+    testCommand: "npm test",
     checkIntervalMs: 5 * 60 * 1000,
     maxSessionMinutes: 30,
     usageThreshold: 80,
   },
   autoStart: false,
-  agent: 'claude',
+  agent: "claude",
   agentCommands: {
-    claude: { command: 'claude' },
-    codex: { command: 'codex' },
+    claude: { command: "claude" },
+    codex: { command: "codex" },
   },
 };
 
 export class CodeAgentModule extends DarwinModule {
-  readonly name = 'CodeAgent';
-  readonly description = 'Orchestrates Claude Code with Beads task management';
+  readonly name = "CodeAgent";
+  readonly description = "Orchestrates Claude Code with Beads task management";
 
   protected override config: CodeAgentConfig;
   private currentSession: ClaudeSession | null = null;
@@ -151,8 +155,8 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   async init(): Promise<void> {
-    const repoNames = this.config.repos.map((r) => r.name).join(', ');
-    this.logger.info(`Repositories: ${repoNames || 'none'}`);
+    const repoNames = this.config.repos.map((r) => r.name).join(", ");
+    this.logger.info(`Repositories: ${repoNames || "none"}`);
 
     // Register tools with Brain
     this.registerTools();
@@ -167,7 +171,7 @@ export class CodeAgentModule extends DarwinModule {
       this.startCheckLoop();
     }
 
-    eventBus.publish('code', 'module_started', {
+    eventBus.publish("code", "module_started", {
       repos: this.config.repos.map((r) => r.name),
     });
   }
@@ -186,10 +190,10 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     if (this.currentSession) {
-      await this.stopCurrentSession('Module stopping', 'stopped');
+      await this.stopCurrentSession("Module stopping", "stopped");
     }
 
-    eventBus.publish('code', 'module_stopped', {});
+    eventBus.publish("code", "module_stopped", {});
   }
 
   /**
@@ -242,18 +246,26 @@ export class CodeAgentModule extends DarwinModule {
   } {
     const session = this.currentSession;
     if (!session) {
-      return { active: false, message: 'No active Claude session' };
+      return { active: false, message: "No active Claude session" };
     }
 
     const total = session.outputBuffer.length;
-    const limitRaw = typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.floor(args.limit) : 50;
+    const limitRaw =
+      typeof args.limit === "number" && Number.isFinite(args.limit)
+        ? Math.floor(args.limit)
+        : 50;
     const limit = Math.max(1, limitRaw);
-    const since = typeof args.since === 'number' && Number.isFinite(args.since) ? Math.max(0, Math.floor(args.since)) : null;
+    const since =
+      typeof args.since === "number" && Number.isFinite(args.since)
+        ? Math.max(0, Math.floor(args.since))
+        : null;
     const start = since ?? Math.max(0, total - limit);
     const safeStart = Math.min(start, total);
     const end = since !== null ? Math.min(total, safeStart + limit) : total;
     const lines = session.outputBuffer.slice(safeStart, end);
-    const lastOutputAt = this.lastOutputAt ? this.lastOutputAt.toISOString() : null;
+    const lastOutputAt = this.lastOutputAt
+      ? this.lastOutputAt.toISOString()
+      : null;
     const secondsSinceOutput = this.lastOutputAt
       ? Math.round((Date.now() - this.lastOutputAt.getTime()) / 1000)
       : null;
@@ -275,13 +287,16 @@ export class CodeAgentModule extends DarwinModule {
   private registerTools(): void {
     // Get ready tasks from all repos
     this.registerTool(
-      'code_get_ready_tasks',
-      'Get list of tasks ready to work on from all configured repos',
+      "code_get_ready_tasks",
+      "Get list of tasks ready to work on from all configured repos",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          limit: { type: 'number', description: 'Max tasks to return' },
-          repo: { type: 'string', description: 'Filter by repo name (optional)' },
+          limit: { type: "number", description: "Max tasks to return" },
+          repo: {
+            type: "string",
+            description: "Filter by repo name (optional)",
+          },
         },
       },
       async (args) => {
@@ -293,16 +308,29 @@ export class CodeAgentModule extends DarwinModule {
 
     // List/search tasks from all repos (includes closed if requested)
     this.registerTool(
-      'code_list_tasks',
-      'List or search Beads tasks across repos (optionally include closed)',
+      "code_list_tasks",
+      "List or search Beads tasks across repos (optionally include closed)",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          limit: { type: 'number', description: 'Max tasks to return' },
-          repo: { type: 'string', description: 'Filter by repo name (optional)' },
-          status: { type: 'string', description: 'Filter by status (e.g., open, in_progress, blocked, closed)' },
-          query: { type: 'string', description: 'Search text for title/description' },
-          includeClosed: { type: 'boolean', description: 'Include closed tasks when no status filter provided' },
+          limit: { type: "number", description: "Max tasks to return" },
+          repo: {
+            type: "string",
+            description: "Filter by repo name (optional)",
+          },
+          status: {
+            type: "string",
+            description:
+              "Filter by status (e.g., open, in_progress, blocked, closed)",
+          },
+          query: {
+            type: "string",
+            description: "Search text for title/description",
+          },
+          includeClosed: {
+            type: "boolean",
+            description: "Include closed tasks when no status filter provided",
+          },
         },
       },
       async (args) => {
@@ -319,15 +347,21 @@ export class CodeAgentModule extends DarwinModule {
 
     // Show task details
     this.registerTool(
-      'code_show_task',
-      'Show details for a Beads task',
+      "code_show_task",
+      "Show details for a Beads task",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
-          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
+          taskId: {
+            type: "string",
+            description: "The Beads task ID (e.g., bd-a1b2)",
+          },
+          repo: {
+            type: "string",
+            description: "Repo name (optional if taskId is unique)",
+          },
         },
-        required: ['taskId'],
+        required: ["taskId"],
       },
       async (args) => {
         const taskId = args.taskId as string;
@@ -338,15 +372,21 @@ export class CodeAgentModule extends DarwinModule {
 
     // Get task repo state
     this.registerTool(
-      'code_get_task_state',
-      'Get repo/branch state for a Beads task (detect existing work)',
+      "code_get_task_state",
+      "Get repo/branch state for a Beads task (detect existing work)",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
-          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
+          taskId: {
+            type: "string",
+            description: "The Beads task ID (e.g., bd-a1b2)",
+          },
+          repo: {
+            type: "string",
+            description: "Repo name (optional if taskId is unique)",
+          },
         },
-        required: ['taskId'],
+        required: ["taskId"],
       },
       async (args) => {
         const taskId = args.taskId as string;
@@ -357,30 +397,37 @@ export class CodeAgentModule extends DarwinModule {
 
     // Start working on a task
     this.registerTool(
-      'code_start_task',
-      'Start Claude Code working on a specific Beads task',
+      "code_start_task",
+      "Start Claude Code working on a specific Beads task",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
-          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
+          taskId: {
+            type: "string",
+            description: "The Beads task ID (e.g., bd-a1b2)",
+          },
+          repo: {
+            type: "string",
+            description: "Repo name (optional if taskId is unique)",
+          },
           mode: {
-            type: 'string',
-            enum: ['auto', 'continue', 'reset', 'inspect'],
-            description: 'Auto = prompt if existing work; continue = resume; reset = hard reset branch; inspect = status only',
+            type: "string",
+            enum: ["auto", "continue", "reset", "inspect"],
+            description:
+              "Auto = prompt if existing work; continue = resume; reset = hard reset branch; inspect = status only",
           },
           agent: {
-            type: 'string',
-            enum: ['claude', 'codex'],
-            description: 'Which CLI backend to use (default from config)',
+            type: "string",
+            enum: ["claude", "codex"],
+            description: "Which CLI backend to use (default from config)",
           },
         },
-        required: ['taskId'],
+        required: ["taskId"],
       },
       async (args) => {
         const taskId = args.taskId as string;
         const repoName = args.repo as string | undefined;
-        const mode = (args.mode as TaskStartMode | undefined) || 'auto';
+        const mode = (args.mode as TaskStartMode | undefined) || "auto";
         const agent = args.agent as CodeAgentBackend | undefined;
         return this.startTask(taskId, repoName, mode, agent);
       }
@@ -388,10 +435,10 @@ export class CodeAgentModule extends DarwinModule {
 
     // Get current status
     this.registerTool(
-      'code_get_status',
-      'Get current Code Agent status including Claude usage and active task',
+      "code_get_status",
+      "Get current Code Agent status including Claude usage and active task",
       {
-        type: 'object',
+        type: "object",
         properties: {},
       },
       async () => this.getAgentStatus()
@@ -399,84 +446,116 @@ export class CodeAgentModule extends DarwinModule {
 
     // Get recent Claude output
     this.registerTool(
-      'code_get_output',
-      'Get recent output from the active Claude session',
+      "code_get_output",
+      "Get recent output from the active Claude session",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          limit: { type: 'number', description: 'Max output chunks to return (default 50)' },
-          since: { type: 'number', description: 'Return chunks after this index (0-based cursor)' },
+          limit: {
+            type: "number",
+            description: "Max output chunks to return (default 50)",
+          },
+          since: {
+            type: "number",
+            description: "Return chunks after this index (0-based cursor)",
+          },
         },
       },
-      async (args) => this.getOutputSnapshot(args as { limit?: number; since?: number })
+      async (args) =>
+        this.getOutputSnapshot(args as { limit?: number; since?: number })
     );
 
     // Stop current task
     this.registerTool(
-      'code_stop_task',
-      'Stop the currently running Claude Code session',
+      "code_stop_task",
+      "Stop the currently running Claude Code session",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          reason: { type: 'string', description: 'Reason for stopping' },
+          reason: { type: "string", description: "Reason for stopping" },
         },
       },
       async (args) => {
-        const reason = (args.reason as string) || 'Stopped by Brain';
+        const reason = (args.reason as string) || "Stopped by Brain";
         return this.stopCurrentSession(reason);
       }
     );
 
     // Check Claude usage
     this.registerTool(
-      'code_check_capacity',
-      'Check if Claude Code has available capacity',
+      "code_check_capacity",
+      "Check if Claude Code has available capacity",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          agent: { type: 'string', enum: ['claude', 'codex'], description: 'Agent backend (optional)' },
+          agent: {
+            type: "string",
+            enum: ["claude", "codex"],
+            description: "Agent backend (optional)",
+          },
         },
       },
       async (args) => {
-        const agent = (args.agent as CodeAgentBackend | undefined) || this.config.agent;
+        const agent =
+          (args.agent as CodeAgentBackend | undefined) || this.config.agent;
         return this.checkAgentCapacity(agent);
       }
     );
 
     // Add a task to a repo
     this.registerTool(
-      'code_add_task',
-      'Create a new Beads task in a repository',
+      "code_add_task",
+      "Create a new Beads task in a repository",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          repo: { type: 'string', description: 'Repo name' },
-          title: { type: 'string', description: 'Task title' },
+          repo: { type: "string", description: "Repo name" },
+          title: { type: "string", description: "Task title" },
           type: {
-            type: 'string',
-            enum: ['task', 'bug', 'epic'],
-            description: 'Task type',
+            type: "string",
+            enum: ["task", "bug", "epic"],
+            description: "Task type",
           },
-          priority: { type: 'number', description: 'Priority (1-5, lower is higher)' },
+          priority: {
+            type: "number",
+            description: "Priority (1-5, lower is higher)",
+          },
         },
-        required: ['repo', 'title'],
+        required: ["repo", "title"],
       },
-      async (args) => this.addTask(args as { repo: string; title: string; type?: string; priority?: number })
+      async (args) =>
+        this.addTask(
+          args as {
+            repo: string;
+            title: string;
+            type?: string;
+            priority?: number;
+          }
+        )
     );
 
     // Update task status/notes
     this.registerTool(
-      'code_update_task',
+      "code_update_task",
       'Update a Beads task status and/or notes (use status "open" to reopen)',
       {
-        type: 'object',
+        type: "object",
         properties: {
-          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
-          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
-          status: { type: 'string', description: 'New status (e.g., open, in_progress, blocked)' },
-          notes: { type: 'string', description: 'Notes to append to the task' },
+          taskId: {
+            type: "string",
+            description: "The Beads task ID (e.g., bd-a1b2)",
+          },
+          repo: {
+            type: "string",
+            description: "Repo name (optional if taskId is unique)",
+          },
+          status: {
+            type: "string",
+            description: "New status (e.g., open, in_progress, blocked)",
+          },
+          notes: { type: "string", description: "Notes to append to the task" },
         },
-        required: ['taskId'],
+        required: ["taskId"],
       },
       async (args) => {
         return this.updateTask({
@@ -490,32 +569,41 @@ export class CodeAgentModule extends DarwinModule {
 
     // Close a task
     this.registerTool(
-      'code_close_task',
-      'Close a Beads task with a reason',
+      "code_close_task",
+      "Close a Beads task with a reason",
       {
-        type: 'object',
+        type: "object",
         properties: {
-          taskId: { type: 'string', description: 'The Beads task ID (e.g., bd-a1b2)' },
-          repo: { type: 'string', description: 'Repo name (optional if taskId is unique)' },
-          reason: { type: 'string', description: 'Reason for closing the task' },
+          taskId: {
+            type: "string",
+            description: "The Beads task ID (e.g., bd-a1b2)",
+          },
+          repo: {
+            type: "string",
+            description: "Repo name (optional if taskId is unique)",
+          },
+          reason: {
+            type: "string",
+            description: "Reason for closing the task",
+          },
         },
-        required: ['taskId'],
+        required: ["taskId"],
       },
       async (args) => {
         return this.closeTask(
           args.taskId as string,
           args.repo as string | undefined,
-          (args.reason as string | undefined) || 'Closed via Darwin'
+          (args.reason as string | undefined) || "Closed via Darwin"
         );
       }
     );
 
     // List repos
     this.registerTool(
-      'code_list_repos',
-      'List configured repositories',
+      "code_list_repos",
+      "List configured repositories",
       {
-        type: 'object',
+        type: "object",
         properties: {},
       },
       async () => this.listRepos()
@@ -540,17 +628,19 @@ export class CodeAgentModule extends DarwinModule {
   private async checkAndExecute(): Promise<void> {
     // Check if paused
     if (this.pauseCheckFn?.()) {
-      this.logger.debug('Darwin paused - skipping task check');
+      this.logger.debug("Darwin paused - skipping task check");
       return;
     }
 
     if (this.currentSession) {
-      this.logger.debug('Session already active');
+      this.logger.debug("Session already active");
       return;
     }
 
     if (this.isLimitActive()) {
-      this.logger.debug(`Claude limit active until ${this.limitUntil?.toISOString()}`);
+      this.logger.debug(
+        `Claude limit active until ${this.limitUntil?.toISOString()}`
+      );
       return;
     }
 
@@ -558,7 +648,10 @@ export class CodeAgentModule extends DarwinModule {
     if (!capacity.available) {
       if (capacity.resetsAt) {
         const parsed = new Date(capacity.resetsAt);
-        this.applyLimitCooldown(Number.isFinite(parsed.getTime()) ? parsed : undefined, 'api');
+        this.applyLimitCooldown(
+          Number.isFinite(parsed.getTime()) ? parsed : undefined,
+          "api"
+        );
       }
       this.logger.debug(`Claude at ${capacity.utilization}% - waiting`);
       return;
@@ -566,20 +659,23 @@ export class CodeAgentModule extends DarwinModule {
 
     const tasks = await this.getReadyTasks(1);
     if (tasks.length === 0) {
-      this.logger.debug('No ready tasks');
+      this.logger.debug("No ready tasks");
       return;
     }
 
     const { task, repo } = tasks[0];
-    await this.startTask(task.id, repo.name, 'continue');
+    await this.startTask(task.id, repo.name, "continue");
   }
 
   /**
    * Get ready tasks from all repos, sorted by priority
    */
-  private async getReadyTasks(limit: number, repoFilter?: string): Promise<QueuedTask[]> {
+  private async getReadyTasks(
+    limit: number,
+    repoFilter?: string
+  ): Promise<QueuedTask[]> {
     const allTasks: QueuedTask[] = [];
-    const readyStatuses = new Set(['open', 'ready']);
+    const readyStatuses = new Set(["open", "ready"]);
 
     const repos = repoFilter
       ? this.config.repos.filter((r) => r.name === repoFilter)
@@ -589,8 +685,10 @@ export class CodeAgentModule extends DarwinModule {
       if (!repo.enabled) continue;
 
       try {
-        const tasks = await this.fetchBeadsTasks(repo, 'ready');
-        const filtered = tasks.filter((task) => readyStatuses.has(task.status.toLowerCase()));
+        const tasks = await this.fetchBeadsTasks(repo, "ready");
+        const filtered = tasks.filter((task) =>
+          readyStatuses.has(task.status.toLowerCase())
+        );
         allTasks.push(...filtered.map((task) => ({ task, repo })));
       } catch (error) {
         this.logger.debug(`No tasks from ${repo.name}: ${error}`);
@@ -620,20 +718,26 @@ export class CodeAgentModule extends DarwinModule {
       if (!repo.enabled) continue;
 
       try {
-        const tasks = await this.fetchBeadsTasks(repo, 'list');
+        const tasks = await this.fetchBeadsTasks(repo, "list");
 
         for (const task of tasks) {
           const taskStatus = task.status.toLowerCase();
-          if (statusFilter && statusFilter !== 'all' && taskStatus !== statusFilter) {
+          if (
+            statusFilter &&
+            statusFilter !== "all" &&
+            taskStatus !== statusFilter
+          ) {
             continue;
           }
 
-          if (!statusFilter && !includeClosed && taskStatus === 'closed') {
+          if (!statusFilter && !includeClosed && taskStatus === "closed") {
             continue;
           }
 
           if (query) {
-            const haystack = `${task.title} ${task.description || ''}`.toLowerCase();
+            const haystack = `${task.title} ${
+              task.description || ""
+            }`.toLowerCase();
             if (!haystack.includes(query)) {
               continue;
             }
@@ -667,18 +771,31 @@ export class CodeAgentModule extends DarwinModule {
   ): Promise<{ success: boolean; task?: BeadTask; message: string }> {
     const repo = await this.findRepo(taskId, repoName);
     if (!repo) {
-      return { success: false, message: `Could not find repo for task ${taskId}` };
+      return {
+        success: false,
+        message: `Could not find repo for task ${taskId}`,
+      };
     }
 
     try {
       const task = await this.loadTaskById(repo, taskId);
       if (!task) {
-        return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
+        return {
+          success: false,
+          message: `Task ${taskId} not found in ${repo.name}`,
+        };
       }
 
-      return { success: true, task, message: `Found ${task.id} in ${repo.name}` };
+      return {
+        success: true,
+        task,
+        message: `Found ${task.id} in ${repo.name}`,
+      };
     } catch (error) {
-      return { success: false, message: `Failed to load task ${taskId}: ${error}` };
+      return {
+        success: false,
+        message: `Failed to load task ${taskId}: ${error}`,
+      };
     }
   }
 
@@ -691,12 +808,18 @@ export class CodeAgentModule extends DarwinModule {
   ): Promise<{ success: boolean; message: string; state?: TaskRepoState }> {
     const repo = await this.findRepo(taskId, repoName);
     if (!repo) {
-      return { success: false, message: `Could not find repo for task ${taskId}` };
+      return {
+        success: false,
+        message: `Could not find repo for task ${taskId}`,
+      };
     }
 
     const task = await this.loadTaskById(repo, taskId);
     if (!task) {
-      return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
+      return {
+        success: false,
+        message: `Task ${taskId} not found in ${repo.name}`,
+      };
     }
 
     const state = await this.getTaskRepoState(repo, task);
@@ -717,16 +840,19 @@ export class CodeAgentModule extends DarwinModule {
     notes?: string;
   }): Promise<{ success: boolean; message: string }> {
     if (!args.status && !args.notes) {
-      return { success: false, message: 'No status or notes provided' };
+      return { success: false, message: "No status or notes provided" };
     }
 
     const repo = await this.findRepo(args.taskId, args.repo);
     if (!repo) {
-      return { success: false, message: `Could not find repo for task ${args.taskId}` };
+      return {
+        success: false,
+        message: `Could not find repo for task ${args.taskId}`,
+      };
     }
 
-    if (args.status?.toLowerCase() === 'closed') {
-      return this.closeTask(args.taskId, repo.name, 'Closed via Darwin');
+    if (args.status?.toLowerCase() === "closed") {
+      return this.closeTask(args.taskId, repo.name, "Closed via Darwin");
     }
 
     const parts: string[] = [`update ${args.taskId}`];
@@ -738,17 +864,23 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     try {
-      await this.execBeads(repo, parts.join(' '), { timeoutMs: 10_000 });
+      await this.execBeads(repo, parts.join(" "), { timeoutMs: 10_000 });
 
-      eventBus.publish('code', 'task_updated', {
+      eventBus.publish("code", "task_updated", {
         taskId: args.taskId,
         repo: repo.name,
         status: args.status,
       });
 
-      return { success: true, message: `Updated ${args.taskId} in ${repo.name}` };
+      return {
+        success: true,
+        message: `Updated ${args.taskId} in ${repo.name}`,
+      };
     } catch (error) {
-      return { success: false, message: `Failed to update task ${args.taskId}: ${error}` };
+      return {
+        success: false,
+        message: `Failed to update task ${args.taskId}: ${error}`,
+      };
     }
   }
 
@@ -758,11 +890,14 @@ export class CodeAgentModule extends DarwinModule {
   private async closeTask(
     taskId: string,
     repoName?: string,
-    reason = 'Closed via Darwin'
+    reason = "Closed via Darwin"
   ): Promise<{ success: boolean; message: string }> {
     const repo = await this.findRepo(taskId, repoName);
     if (!repo) {
-      return { success: false, message: `Could not find repo for task ${taskId}` };
+      return {
+        success: false,
+        message: `Could not find repo for task ${taskId}`,
+      };
     }
 
     try {
@@ -772,7 +907,7 @@ export class CodeAgentModule extends DarwinModule {
         { timeoutMs: 10_000 }
       );
 
-      eventBus.publish('code', 'task_closed', {
+      eventBus.publish("code", "task_closed", {
         taskId,
         repo: repo.name,
         reason,
@@ -780,27 +915,37 @@ export class CodeAgentModule extends DarwinModule {
 
       return { success: true, message: `Closed ${taskId} in ${repo.name}` };
     } catch (error) {
-      return { success: false, message: `Failed to close task ${taskId}: ${error}` };
+      return {
+        success: false,
+        message: `Failed to close task ${taskId}: ${error}`,
+      };
     }
   }
 
   /**
    * Fetch tasks from Beads with timeout and file fallback
    */
-  private async fetchBeadsTasks(repo: RepoConfig, mode: 'ready' | 'list'): Promise<BeadTask[]> {
-    const command = mode === 'ready' ? 'ready --json' : 'list --json';
+  private async fetchBeadsTasks(
+    repo: RepoConfig,
+    mode: "ready" | "list"
+  ): Promise<BeadTask[]> {
+    const command = mode === "ready" ? "ready --json" : "list --json";
     try {
       const { stdout } = await this.execBeads(repo, command, {
         timeoutMs: 10_000,
         maxBuffer: 5 * 1024 * 1024,
       });
       const result = JSON.parse(stdout);
-      const rawTasks = (Array.isArray(result) ? result : result.issues || []) as Array<Record<string, unknown>>;
+      const rawTasks = (
+        Array.isArray(result) ? result : result.issues || []
+      ) as Array<Record<string, unknown>>;
       return rawTasks
         .map((raw) => this.normalizeTask(raw))
         .filter((task): task is BeadTask => !!task);
     } catch (error) {
-      this.logger.warn(`Beads ${mode} failed in ${repo.name}, reading issues.jsonl instead: ${error}`);
+      this.logger.warn(
+        `Beads ${mode} failed in ${repo.name}, reading issues.jsonl instead: ${error}`
+      );
       return this.readTasksFromFile(repo);
     }
   }
@@ -808,7 +953,10 @@ export class CodeAgentModule extends DarwinModule {
   /**
    * Load a task by id with file fallback
    */
-  private async loadTaskById(repo: RepoConfig, taskId: string): Promise<BeadTask | null> {
+  private async loadTaskById(
+    repo: RepoConfig,
+    taskId: string
+  ): Promise<BeadTask | null> {
     try {
       const { stdout } = await this.execBeads(repo, `show ${taskId} --json`, {
         timeoutMs: 10_000,
@@ -828,10 +976,10 @@ export class CodeAgentModule extends DarwinModule {
    */
   private async readTasksFromFile(repo: RepoConfig): Promise<BeadTask[]> {
     try {
-      const filePath = join(repo.path, '.beads', 'issues.jsonl');
-      const content = await readFile(filePath, 'utf-8');
+      const filePath = join(repo.path, ".beads", "issues.jsonl");
+      const content = await readFile(filePath, "utf-8");
       return content
-        .split('\n')
+        .split("\n")
         .filter(Boolean)
         .map((line) => {
           try {
@@ -842,7 +990,9 @@ export class CodeAgentModule extends DarwinModule {
         })
         .filter((task): task is BeadTask => !!task);
     } catch (error) {
-      this.logger.debug(`Failed to read issues.jsonl for ${repo.name}: ${error}`);
+      this.logger.debug(
+        `Failed to read issues.jsonl for ${repo.name}: ${error}`
+      );
       return [];
     }
   }
@@ -857,29 +1007,41 @@ export class CodeAgentModule extends DarwinModule {
     const priority = raw.priority;
     const type = raw.type || raw.issue_type;
 
-    if (typeof id !== 'string' || typeof title !== 'string' || typeof status !== 'string') {
+    if (
+      typeof id !== "string" ||
+      typeof title !== "string" ||
+      typeof status !== "string"
+    ) {
       return null;
     }
 
     return {
       id,
       title,
-      description: typeof raw.description === 'string' ? raw.description : undefined,
+      description:
+        typeof raw.description === "string" ? raw.description : undefined,
       status,
-      priority: typeof priority === 'number' ? priority : 0,
-      type: typeof type === 'string' ? type : 'task',
-      issue_type: typeof raw.issue_type === 'string' ? raw.issue_type : undefined,
-      created_at: typeof raw.created_at === 'string' ? raw.created_at : undefined,
-      updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : undefined,
-      closed_at: typeof raw.closed_at === 'string' ? raw.closed_at : undefined,
-      close_reason: typeof raw.close_reason === 'string' ? raw.close_reason : undefined,
+      priority: typeof priority === "number" ? priority : 0,
+      type: typeof type === "string" ? type : "task",
+      issue_type:
+        typeof raw.issue_type === "string" ? raw.issue_type : undefined,
+      created_at:
+        typeof raw.created_at === "string" ? raw.created_at : undefined,
+      updated_at:
+        typeof raw.updated_at === "string" ? raw.updated_at : undefined,
+      closed_at: typeof raw.closed_at === "string" ? raw.closed_at : undefined,
+      close_reason:
+        typeof raw.close_reason === "string" ? raw.close_reason : undefined,
     };
   }
 
   /**
    * Find repo by name or find the repo containing a task
    */
-  private async findRepo(taskId: string, repoName?: string): Promise<RepoConfig | null> {
+  private async findRepo(
+    taskId: string,
+    repoName?: string
+  ): Promise<RepoConfig | null> {
     // If repoName provided and matches a configured repo, use it
     if (repoName) {
       const exactMatch = this.config.repos.find((r) => r.name === repoName);
@@ -904,7 +1066,7 @@ export class CodeAgentModule extends DarwinModule {
   private async startTask(
     taskId: string,
     repoName?: string,
-    mode: TaskStartMode = 'auto',
+    mode: TaskStartMode = "auto",
     agent?: CodeAgentBackend
   ): Promise<{
     success: boolean;
@@ -916,7 +1078,7 @@ export class CodeAgentModule extends DarwinModule {
     };
   }> {
     if (this.currentSession) {
-      return { success: false, message: 'Session already active' };
+      return { success: false, message: "Session already active" };
     }
 
     if (this.isLimitActive()) {
@@ -929,19 +1091,25 @@ export class CodeAgentModule extends DarwinModule {
     // Find the repo
     const repo = await this.findRepo(taskId, repoName);
     if (!repo) {
-      return { success: false, message: `Could not find repo for task ${taskId}` };
+      return {
+        success: false,
+        message: `Could not find repo for task ${taskId}`,
+      };
     }
 
     // Get task details
     const task = await this.loadTaskById(repo, taskId);
     if (!task) {
-      return { success: false, message: `Task ${taskId} not found in ${repo.name}` };
+      return {
+        success: false,
+        message: `Task ${taskId} not found in ${repo.name}`,
+      };
     }
 
     const selectedAgent = agent || this.config.agent;
     let state = await this.getTaskRepoState(repo, task);
 
-    if (mode === 'inspect') {
+    if (mode === "inspect") {
       return {
         success: true,
         message: `Task state for ${taskId} in ${repo.name}`,
@@ -950,25 +1118,35 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     const needsDecision = this.shouldRequireResumeDecision(task, state);
-    if (mode === 'auto' && needsDecision) {
+    if (mode === "auto" && needsDecision) {
       return {
         success: false,
         message: `Existing work detected for ${taskId} in ${repo.name}. Choose continue or reset.`,
         state,
         actions: {
           continue: {
-            tool: 'code_start_task',
-            args: { taskId, repo: repo.name, mode: 'continue', agent: selectedAgent },
+            tool: "code_start_task",
+            args: {
+              taskId,
+              repo: repo.name,
+              mode: "continue",
+              agent: selectedAgent,
+            },
           },
           reset: {
-            tool: 'code_start_task',
-            args: { taskId, repo: repo.name, mode: 'reset', agent: selectedAgent },
+            tool: "code_start_task",
+            args: {
+              taskId,
+              repo: repo.name,
+              mode: "reset",
+              agent: selectedAgent,
+            },
           },
         },
       };
     }
 
-    if (mode === 'reset') {
+    if (mode === "reset") {
       try {
         await this.resetTaskBranch(repo, task, state);
         state = await this.getTaskRepoState(repo, task);
@@ -981,7 +1159,9 @@ export class CodeAgentModule extends DarwinModule {
       }
     }
 
-    this.logger.info(`Starting task: ${taskId} - ${task.title} (${repo.name}, ${selectedAgent})`);
+    this.logger.info(
+      `Starting task: ${taskId} - ${task.title} (${repo.name}, ${selectedAgent})`
+    );
     this.sessionEndReason = null;
     this.limitRecoveryAttempts = 0;
 
@@ -990,7 +1170,7 @@ export class CodeAgentModule extends DarwinModule {
     state = await this.getTaskRepoState(repo, task);
 
     // Update Beads status
-    await this.updateTaskStatus(repo, taskId, 'in_progress');
+    await this.updateTaskStatus(repo, taskId, "in_progress");
 
     // Create TerminalController for PTY-based interaction
     const terminal = new TerminalController({
@@ -998,8 +1178,8 @@ export class CodeAgentModule extends DarwinModule {
       cols: 120,
       rows: 40,
       env: {
-        NO_COLOR: '1',
-        TERM: 'xterm-256color',
+        NO_COLOR: "1",
+        TERM: "xterm-256color",
       },
     });
 
@@ -1022,7 +1202,7 @@ export class CodeAgentModule extends DarwinModule {
     // Set session timeout
     this.sessionTimeout = setTimeout(() => {
       this.logger.warn(`Session timeout for ${taskId}`);
-      this.stopCurrentSession('Timeout', 'timeout');
+      this.stopCurrentSession("Timeout", "timeout");
     }, this.config.defaults.maxSessionMinutes * 60 * 1000);
 
     try {
@@ -1038,23 +1218,13 @@ export class CodeAgentModule extends DarwinModule {
       const agentArgs = args ? [...args] : [];
       let inlinePrompt = false;
 
-      if (selectedAgent === 'claude') {
-        inlinePrompt = true;
-        const hasPromptArg = agentArgs.includes('-p') ||
-          agentArgs.includes('--prompt') ||
-          agentArgs.some((arg) => arg.startsWith('--prompt='));
-        if (!hasPromptArg) {
-          agentArgs.push('-p', await ensurePrompt());
-        }
-      }
-
       // Start agent CLI with inline prompt for Claude
       await terminal.start(command, agentArgs);
 
       const outputSeen = await terminal.waitForOutput(/[\s\S]/, 5000);
       if (!outputSeen.found && !inlinePrompt) {
-        this.logger.warn('No output from agent after start, sending newline');
-        await terminal.executeAction({ type: 'enter', reason: 'Kick prompt' });
+        this.logger.warn("No output from agent after start, sending newline");
+        await terminal.executeAction({ type: "enter", reason: "Kick prompt" });
       }
 
       const sendPrompt = async (reason: string, clearBuffer = true) => {
@@ -1063,22 +1233,42 @@ export class CodeAgentModule extends DarwinModule {
         }
         const prompt = await ensurePrompt();
         this.logger.info(reason);
-        await terminal.executeAction({ type: 'type', content: prompt, reason: `${reason} (type)` });
-        await terminal.executeAction({ type: 'wait', waitMs: 50, reason: 'Allow paste to settle' });
-        await terminal.executeAction({ type: 'enter', reason: `${reason} (submit)` });
+        await terminal.executeAction({
+          type: "type",
+          content: prompt,
+          reason: `${reason} (type)`,
+        });
+        await terminal.executeAction({
+          type: "wait",
+          waitMs: 50,
+          reason: "Allow paste to settle",
+        });
+        await terminal.executeAction({
+          type: "enter",
+          reason: `${reason} (submit)`,
+        });
 
-        const progressed = await terminal.waitForState(['processing', 'question', 'limit_reached', 'error'], 2000);
+        const progressed = await terminal.waitForState(
+          ["processing", "question", "limit_reached", "error"],
+          2000
+        );
         if (!progressed.reached) {
           const observation = terminal.getObservation();
           const pasted = /pasted text/i.test(observation.recentOutput);
-          const idleReady = observation.state === 'ready' && observation.promptVisible;
+          const idleReady =
+            observation.state === "ready" && observation.promptVisible;
           if (idleReady && pasted) {
-            this.logger.warn('Claude still idle after paste, pressing enter again');
-            await terminal.executeAction({ type: 'enter', reason: 'Submit pasted prompt' });
+            this.logger.warn(
+              "Claude still idle after paste, pressing enter again"
+            );
+            await terminal.executeAction({
+              type: "enter",
+              reason: "Submit pasted prompt",
+            });
           }
         }
 
-        eventBus.publish('code', 'task_started', {
+        eventBus.publish("code", "task_started", {
           taskId,
           title: task.title,
           repo: repo.name,
@@ -1095,13 +1285,13 @@ export class CodeAgentModule extends DarwinModule {
 
       const startError = this.detectStartupError(terminal.getFullBuffer());
       if (startError) {
-        await this.stopCurrentSession('Startup error', 'start_error');
+        await this.stopCurrentSession("Startup error", "start_error");
         return { success: false, message: startError };
       }
 
       if (inlinePrompt) {
-        this.logger.info('Claude started with inline prompt');
-        eventBus.publish('code', 'task_started', {
+        this.logger.info("Claude started with inline prompt");
+        eventBus.publish("code", "task_started", {
           taskId,
           title: task.title,
           repo: repo.name,
@@ -1116,71 +1306,102 @@ export class CodeAgentModule extends DarwinModule {
       }
 
       // Wait for Claude to be ready
-      this.logger.info('Waiting for Claude prompt...');
-      const ready = await terminal.waitForState(['ready', 'question', 'limit_reached', 'error'], 30000);
+      this.logger.info("Waiting for Claude prompt...");
+      const ready = await terminal.waitForState(
+        ["ready", "question", "limit_reached", "error"],
+        30000
+      );
 
       if (!ready.reached) {
         const observation = terminal.getObservation();
         const startError = this.detectStartupError(terminal.getFullBuffer());
         const tail = observation.recentOutput.trim().slice(-400);
-        this.logger.error('Claude did not reach ready state');
+        this.logger.error("Claude did not reach ready state");
         if (startError) {
-          await this.stopCurrentSession('Failed to start', 'start_error');
+          await this.stopCurrentSession("Failed to start", "start_error");
           return {
             success: false,
-            message: startError || `Claude Code failed to start. Last output: ${tail || '(none)'}`,
+            message:
+              startError ||
+              `Claude Code failed to start. Last output: ${tail || "(none)"}`,
           };
         }
 
-        this.logger.warn('Claude prompt not detected, sending task prompt anyway');
-        return await sendPrompt('Sending task prompt without detected prompt', false);
+        this.logger.warn(
+          "Claude prompt not detected, sending task prompt anyway"
+        );
+        return await sendPrompt(
+          "Sending task prompt without detected prompt",
+          false
+        );
       }
 
       let startState = ready.state;
 
-      if (startState === 'question') {
-        const followup = await terminal.waitForState(['ready', 'limit_reached', 'error'], 30000);
+      if (startState === "question") {
+        const followup = await terminal.waitForState(
+          ["ready", "limit_reached", "error"],
+          30000
+        );
         if (!followup.reached) {
           const observation = terminal.getObservation();
           const tail = observation.recentOutput.trim().slice(-400);
           const startError = this.detectStartupError(terminal.getFullBuffer());
           if (startError) {
-            await this.stopCurrentSession('Failed to start', 'start_error');
+            await this.stopCurrentSession("Failed to start", "start_error");
             return {
               success: false,
-              message: startError || `Claude Code failed to start. Last output: ${tail || '(none)'}`,
+              message:
+                startError ||
+                `Claude Code failed to start. Last output: ${tail || "(none)"}`,
             };
           }
 
-          this.logger.warn('Claude prompt still not detected after question, sending task prompt');
-          return await sendPrompt('Sending task prompt after unanswered startup prompt', false);
+          this.logger.warn(
+            "Claude prompt still not detected after question, sending task prompt"
+          );
+          return await sendPrompt(
+            "Sending task prompt after unanswered startup prompt",
+            false
+          );
         }
         startState = followup.state;
       }
 
-      if (startState === 'limit_reached') {
-        const recovered = await this.tryRecoverFromLimit(terminal, selectedAgent);
+      if (startState === "limit_reached") {
+        const recovered = await this.tryRecoverFromLimit(
+          terminal,
+          selectedAgent
+        );
         if (!recovered) {
-          return { success: false, message: 'Claude usage limit reached, waiting for reset' };
+          return {
+            success: false,
+            message: "Claude usage limit reached, waiting for reset",
+          };
         }
       }
 
-      if (startState === 'error') {
+      if (startState === "error") {
         const startError = this.detectStartupError(terminal.getFullBuffer());
-        await this.stopCurrentSession('Terminal error', 'start_error');
-        return { success: false, message: startError || 'Claude Code failed to start' };
+        await this.stopCurrentSession("Terminal error", "start_error");
+        return {
+          success: false,
+          message: startError || "Claude Code failed to start",
+        };
       }
 
-      const startErrorAfterReady = this.detectStartupError(terminal.getFullBuffer());
+      const startErrorAfterReady = this.detectStartupError(
+        terminal.getFullBuffer()
+      );
       if (startErrorAfterReady) {
-        await this.stopCurrentSession('Startup error', 'start_error');
+        await this.stopCurrentSession("Startup error", "start_error");
         return { success: false, message: startErrorAfterReady };
       }
 
-      return await sendPrompt('Claude is ready, sending task prompt...');
+      return await sendPrompt("Claude is ready, sending task prompt...");
     } catch (error) {
       this.logger.error(`Failed to start Claude: ${error}`);
-      await this.stopCurrentSession('Start error', 'start_error');
+      await this.stopCurrentSession("Start error", "start_error");
       return { success: false, message: `Failed to start Claude: ${error}` };
     }
   }
@@ -1188,9 +1409,13 @@ export class CodeAgentModule extends DarwinModule {
   /**
    * Set up event handlers for the TerminalController
    */
-  private setupTerminalHandlers(terminal: TerminalController, task: BeadTask, repo: RepoConfig): void {
+  private setupTerminalHandlers(
+    terminal: TerminalController,
+    task: BeadTask,
+    repo: RepoConfig
+  ): void {
     // Handle all output
-    terminal.on('output', (data) => {
+    terminal.on("output", (data) => {
       this.currentSession?.outputBuffer.push(data);
       this.lastOutputAt = new Date();
       this.touch();
@@ -1202,10 +1427,10 @@ export class CodeAgentModule extends DarwinModule {
     });
 
     // Handle state changes
-    terminal.on('stateChange', (from, to) => {
+    terminal.on("stateChange", (from, to) => {
       this.logger.debug(`Claude state: ${from} -> ${to}`);
 
-      if (to === 'ready' && from === 'processing') {
+      if (to === "ready" && from === "processing") {
         // Claude finished processing and is waiting for input
         // This could mean the task is done or Claude is waiting for more input
         this.checkTaskCompletion(task, repo);
@@ -1213,10 +1438,10 @@ export class CodeAgentModule extends DarwinModule {
     });
 
     // Handle questions from Claude
-    terminal.on('question', async (question) => {
+    terminal.on("question", async (question) => {
       this.logger.info(`Claude asks: ${question}`);
 
-      eventBus.publish('code', 'question', {
+      eventBus.publish("code", "question", {
         taskId: this.currentSession?.taskId,
         question,
       });
@@ -1227,9 +1452,11 @@ export class CodeAgentModule extends DarwinModule {
       const actions = Array.isArray(action) ? action : [action];
 
       for (const step of actions) {
-        const reason = step.reason || 'Brain decision';
+        const reason = step.reason || "Brain decision";
         this.logger.info(
-          `Answering with ${step.type}${step.content ? `: ${step.content.slice(0, 50)}` : ''}`
+          `Answering with ${step.type}${
+            step.content ? `: ${step.content.slice(0, 50)}` : ""
+          }`
         );
         await terminal.executeAction({
           ...step,
@@ -1239,14 +1466,16 @@ export class CodeAgentModule extends DarwinModule {
     });
 
     // Handle limit reached
-    terminal.on('limitReached', (resetTime) => {
-      if (this.sessionEndReason === 'limit') {
+    terminal.on("limitReached", (resetTime) => {
+      if (this.sessionEndReason === "limit") {
         return;
       }
 
-      this.logger.warn(`Usage limit reached, resets at ${resetTime?.toISOString()}`);
+      this.logger.warn(
+        `Usage limit reached, resets at ${resetTime?.toISOString()}`
+      );
 
-      eventBus.publish('code', 'limit_reached', {
+      eventBus.publish("code", "limit_reached", {
         taskId: this.currentSession?.taskId,
         resetTime: resetTime?.toISOString(),
       });
@@ -1256,7 +1485,7 @@ export class CodeAgentModule extends DarwinModule {
     });
 
     // Handle process exit
-    terminal.on('exit', async (code, signal) => {
+    terminal.on("exit", async (code, signal) => {
       this.logger.info(`Claude exited: code=${code}, signal=${signal}`);
 
       if (this.sessionTimeout) {
@@ -1287,10 +1516,10 @@ export class CodeAgentModule extends DarwinModule {
     });
 
     // Handle errors
-    terminal.on('error', (error) => {
+    terminal.on("error", (error) => {
       this.logger.error(`Terminal error: ${error.message}`);
 
-      eventBus.publish('code', 'error', {
+      eventBus.publish("code", "error", {
         taskId: this.currentSession?.taskId,
         error: error.message,
       });
@@ -1300,7 +1529,10 @@ export class CodeAgentModule extends DarwinModule {
   /**
    * Check if the task is completed by examining recent output
    */
-  private async checkTaskCompletion(task: BeadTask, repo: RepoConfig): Promise<void> {
+  private async checkTaskCompletion(
+    task: BeadTask,
+    repo: RepoConfig
+  ): Promise<void> {
     if (!this.currentSession) return;
 
     const observation = this.currentSession.terminal.getObservation();
@@ -1315,13 +1547,18 @@ export class CodeAgentModule extends DarwinModule {
       /ready.*for.*review/i,
     ];
 
-    const isComplete = completionIndicators.some((pattern) => pattern.test(recentOutput));
+    const isComplete = completionIndicators.some((pattern) =>
+      pattern.test(recentOutput)
+    );
 
     if (isComplete) {
-      this.logger.info('Task appears complete, initiating wrap-up...');
+      this.logger.info("Task appears complete, initiating wrap-up...");
 
       // Send exit command to Claude
-      await this.currentSession.terminal.executeAction({ type: 'send', content: '/exit' });
+      await this.currentSession.terminal.executeAction({
+        type: "send",
+        content: "/exit",
+      });
     }
   }
 
@@ -1337,28 +1574,46 @@ export class CodeAgentModule extends DarwinModule {
     const safety = this.checkSafety(question);
     if (safety) {
       this.logger.info(`Safety rule: ${safety.reason}`);
-      return { type: 'answer', content: safety.response, reason: safety.reason };
+      return {
+        type: "answer",
+        content: safety.response,
+        reason: safety.reason,
+      };
     }
 
     // Simple patterns - don't need AI
-    if (question.match(/run.*test/i)) return { type: 'answer', content: 'y', reason: 'Allow tests' };
-    if (question.match(/create.*file/i)) return { type: 'answer', content: 'y', reason: 'Allow file creation' };
-    if (question.match(/apply.*changes/i)) return { type: 'answer', content: 'y', reason: 'Allow changes' };
-    if (question.match(/\[y\/n\]/i) && question.match(/proceed|continue|apply|create/i)) {
-      return { type: 'answer', content: 'y', reason: 'Proceed with safe action' };
+    if (question.match(/run.*test/i))
+      return { type: "answer", content: "y", reason: "Allow tests" };
+    if (question.match(/create.*file/i))
+      return { type: "answer", content: "y", reason: "Allow file creation" };
+    if (question.match(/apply.*changes/i))
+      return { type: "answer", content: "y", reason: "Allow changes" };
+    if (
+      question.match(/\[y\/n\]/i) &&
+      question.match(/proceed|continue|apply|create/i)
+    ) {
+      return {
+        type: "answer",
+        content: "y",
+        reason: "Proceed with safe action",
+      };
     }
     if (question.match(/press\s+enter|hit\s+enter|press\s+return/i)) {
-      return { type: 'enter', reason: 'Acknowledge prompt' };
+      return { type: "enter", reason: "Acknowledge prompt" };
     }
 
     // Menu-style prompts (arrow-key selection)
     if (this.isMenuPrompt(question, observation)) {
       const menu = this.parseMenuOptions(observation.recentOutput);
       if (menu.options.length > 0) {
-        const targetIndex = await this.chooseMenuOptionIndex(question, task, menu.options);
+        const targetIndex = await this.chooseMenuOptionIndex(
+          question,
+          task,
+          menu.options
+        );
         return this.buildMenuActions(menu.selectedIndex ?? 0, targetIndex);
       }
-      return { type: 'enter', reason: 'Accept default menu selection' };
+      return { type: "enter", reason: "Accept default menu selection" };
     }
 
     // Check for multi-choice questions (numbered options)
@@ -1368,8 +1623,12 @@ export class CodeAgentModule extends DarwinModule {
       const choice = await this.brain.reason(
         `Claude Code is working on "${task.title}" and presents options:\n${question}\n\nWhich option number (1-9) is best? Reply with just the number.`
       );
-      const choiceNum = choice.match(/\d/)?.[0] || '1';
-      return { type: 'answer', content: choiceNum, reason: 'Select numbered option' };
+      const choiceNum = choice.match(/\d/)?.[0] || "1";
+      return {
+        type: "answer",
+        content: choiceNum,
+        reason: "Select numbered option",
+      };
     }
 
     // Ask Brain for y/n decision
@@ -1377,17 +1636,23 @@ export class CodeAgentModule extends DarwinModule {
       `Claude Code is working on "${task.title}" and asks: "${question}". Should we approve?`
     );
 
-    const answer = shouldApprove ? 'y' : 'n';
-    this.logger.info(`Brain decides: ${answer} for "${question.slice(0, 50)}..."`);
-    return { type: 'answer', content: answer, reason: 'Brain decision' };
+    const answer = shouldApprove ? "y" : "n";
+    this.logger.info(
+      `Brain decides: ${answer} for "${question.slice(0, 50)}..."`
+    );
+    return { type: "answer", content: answer, reason: "Brain decision" };
   }
 
-  private isMenuPrompt(question: string, observation: TerminalObservation): boolean {
+  private isMenuPrompt(
+    question: string,
+    observation: TerminalObservation
+  ): boolean {
     const lower = question.toLowerCase();
     const output = observation.recentOutput.toLowerCase();
-    const hasMenuHint = /(?:arrow keys|select (?:an|a) option|select one|choose (?:an|a) option|choose one)/i.test(
-      `${lower}\n${output}`
-    );
+    const hasMenuHint =
+      /(?:arrow keys|select (?:an|a) option|select one|choose (?:an|a) option|choose one)/i.test(
+        `${lower}\n${output}`
+      );
 
     if (!hasMenuHint) {
       return false;
@@ -1397,9 +1662,13 @@ export class CodeAgentModule extends DarwinModule {
     return menu.options.length >= 2;
   }
 
-  private parseMenuOptions(output: string): { options: string[]; selectedIndex: number | null } {
-    const lines = output.split('\n').slice(-30);
-    const matches: Array<{ index: number; text: string; selected: boolean }> = [];
+  private parseMenuOptions(output: string): {
+    options: string[];
+    selectedIndex: number | null;
+  } {
+    const lines = output.split("\n").slice(-30);
+    const matches: Array<{ index: number; text: string; selected: boolean }> =
+      [];
 
     lines.forEach((line, index) => {
       const parsed = this.parseOptionLine(line);
@@ -1412,7 +1681,9 @@ export class CodeAgentModule extends DarwinModule {
       return { options: [], selectedIndex: null };
     }
 
-    const groups: Array<Array<{ index: number; text: string; selected: boolean }>> = [];
+    const groups: Array<
+      Array<{ index: number; text: string; selected: boolean }>
+    > = [];
     let current: Array<{ index: number; text: string; selected: boolean }> = [];
     let lastIndex = -2;
 
@@ -1430,16 +1701,23 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     const group =
-      groups.slice().reverse().find((g) => g.length >= 2) ||
-      groups[groups.length - 1];
+      groups
+        .slice()
+        .reverse()
+        .find((g) => g.length >= 2) || groups[groups.length - 1];
 
     const options = group.map((g) => g.text);
     const selectedIndex = group.findIndex((g) => g.selected);
 
-    return { options, selectedIndex: selectedIndex >= 0 ? selectedIndex : null };
+    return {
+      options,
+      selectedIndex: selectedIndex >= 0 ? selectedIndex : null,
+    };
   }
 
-  private parseOptionLine(line: string): { text: string; selected: boolean } | null {
+  private parseOptionLine(
+    line: string
+  ): { text: string; selected: boolean } | null {
     const arrowMatch = line.match(/^\s*[>\u276F]\s+(.+)$/);
     if (arrowMatch) {
       return { text: arrowMatch[1].trim(), selected: true };
@@ -1447,12 +1725,18 @@ export class CodeAgentModule extends DarwinModule {
 
     const radioMatch = line.match(/^\s*\((x|X| )\)\s+(.+)$/);
     if (radioMatch) {
-      return { text: radioMatch[2].trim(), selected: radioMatch[1].toLowerCase() === 'x' };
+      return {
+        text: radioMatch[2].trim(),
+        selected: radioMatch[1].toLowerCase() === "x",
+      };
     }
 
     const checkboxMatch = line.match(/^\s*\[(x|X| )\]\s+(.+)$/);
     if (checkboxMatch) {
-      return { text: checkboxMatch[2].trim(), selected: checkboxMatch[1].toLowerCase() === 'x' };
+      return {
+        text: checkboxMatch[2].trim(),
+        selected: checkboxMatch[1].toLowerCase() === "x",
+      };
     }
 
     const numericMatch = line.match(/^\s*\d+[\.\)]\s+(.+)$/);
@@ -1492,7 +1776,7 @@ export class CodeAgentModule extends DarwinModule {
       return 0;
     }
 
-    const numbered = options.map((opt, idx) => `${idx + 1}. ${opt}`).join('\n');
+    const numbered = options.map((opt, idx) => `${idx + 1}. ${opt}`).join("\n");
     const choice = await this.brain.reason(
       `Claude Code is working on "${task.title}" and presents a menu:\n${question}\n\nOptions:\n${numbered}\n\nWhich option number (1-${options.length}) is best? Reply with just the number.`
     );
@@ -1501,37 +1785,46 @@ export class CodeAgentModule extends DarwinModule {
     return Math.min(Math.max(index, 0), options.length - 1);
   }
 
-  private buildMenuActions(currentIndex: number, targetIndex: number): TerminalAction[] {
+  private buildMenuActions(
+    currentIndex: number,
+    targetIndex: number
+  ): TerminalAction[] {
     const actions: TerminalAction[] = [];
     const delta = targetIndex - currentIndex;
-    const key = delta >= 0 ? '\x1b[B' : '\x1b[A';
+    const key = delta >= 0 ? "\x1b[B" : "\x1b[A";
     const steps = Math.abs(delta);
 
     for (let i = 0; i < steps; i += 1) {
-      actions.push({ type: 'type', content: key, reason: 'Move menu selection' });
+      actions.push({
+        type: "type",
+        content: key,
+        reason: "Move menu selection",
+      });
     }
 
-    actions.push({ type: 'enter', reason: 'Select menu option' });
+    actions.push({ type: "enter", reason: "Select menu option" });
     return actions;
   }
 
   /**
    * Hardcoded safety rules
    */
-  private checkSafety(question: string): { response: string; reason: string } | null {
+  private checkSafety(
+    question: string
+  ): { response: string; reason: string } | null {
     const lower = question.toLowerCase();
 
-    if (lower.includes('rm -rf') || lower.includes('rmdir')) {
-      return { response: 'n', reason: 'Dangerous delete' };
+    if (lower.includes("rm -rf") || lower.includes("rmdir")) {
+      return { response: "n", reason: "Dangerous delete" };
     }
-    if (lower.includes('drop table') || lower.includes('delete from')) {
-      return { response: 'n', reason: 'Dangerous database op' };
+    if (lower.includes("drop table") || lower.includes("delete from")) {
+      return { response: "n", reason: "Dangerous database op" };
     }
-    if (lower.includes('--force') && lower.includes('push')) {
-      return { response: 'n', reason: 'Force push blocked' };
+    if (lower.includes("--force") && lower.includes("push")) {
+      return { response: "n", reason: "Force push blocked" };
     }
-    if (lower.includes('sudo')) {
-      return { response: 'n', reason: 'Privilege escalation blocked' };
+    if (lower.includes("sudo")) {
+      return { response: "n", reason: "Privilege escalation blocked" };
     }
 
     return null;
@@ -1540,8 +1833,12 @@ export class CodeAgentModule extends DarwinModule {
   /**
    * Handle limit reached - pause and schedule retry
    */
-  private async handleLimitReached(task: BeadTask, repo: RepoConfig, resetTime?: Date): Promise<void> {
-    if (this.sessionEndReason === 'limit') {
+  private async handleLimitReached(
+    task: BeadTask,
+    repo: RepoConfig,
+    resetTime?: Date
+  ): Promise<void> {
+    if (this.sessionEndReason === "limit") {
       return;
     }
 
@@ -1551,23 +1848,25 @@ export class CodeAgentModule extends DarwinModule {
         this.currentSession.agent
       );
       if (recovered) {
-        this.logger.warn(`Limit message cleared for ${task.id} (${repo.name}), continuing session`);
+        this.logger.warn(
+          `Limit message cleared for ${task.id} (${repo.name}), continuing session`
+        );
         return;
       }
     }
 
-    this.sessionEndReason = 'limit';
+    this.sessionEndReason = "limit";
     this.limitResumeTask = { taskId: task.id, repoName: repo.name };
-    this.applyLimitCooldown(resetTime, 'cli');
+    this.applyLimitCooldown(resetTime, "cli");
 
     // Stop the current session gracefully
-    await this.stopCurrentSession('Limit reached', 'limit');
+    await this.stopCurrentSession("Limit reached", "limit");
 
     // Update task with note about limit
     const resetAt = resetTime || this.limitUntil || undefined;
     const note = resetAt
       ? `Usage limit reached, will retry after ${resetAt.toISOString()}`
-      : 'Usage limit reached';
+      : "Usage limit reached";
 
     await this.execBeads(
       repo,
@@ -1575,7 +1874,7 @@ export class CodeAgentModule extends DarwinModule {
       { timeoutMs: 10_000 }
     ).catch(() => {});
 
-    eventBus.publish('code', 'limit_reached', {
+    eventBus.publish("code", "limit_reached", {
       taskId: task.id,
       repo: repo.name,
       resetTime: resetTime?.toISOString(),
@@ -1585,7 +1884,10 @@ export class CodeAgentModule extends DarwinModule {
   /**
    * Handle successful task completion
    */
-  private async handleTaskSuccess(task: BeadTask, repo: RepoConfig): Promise<void> {
+  private async handleTaskSuccess(
+    task: BeadTask,
+    repo: RepoConfig
+  ): Promise<void> {
     this.logger.info(`Task ${task.id} completed (${repo.name})`);
 
     // Run tests
@@ -1593,13 +1895,19 @@ export class CodeAgentModule extends DarwinModule {
     const testResult = await this.runTests(repo, testCommand);
 
     if (!testResult.passed) {
-      await this.handleTaskFailure(task, repo, `Tests failed: ${testResult.output.slice(0, 200)}`);
+      await this.handleTaskFailure(
+        task,
+        repo,
+        `Tests failed: ${testResult.output.slice(0, 200)}`
+      );
       return;
     }
 
     // Commit and push
     const commitMsg = await this.generateCommitMessage(task);
-    await execAsync(`git add -A && git commit -m "${commitMsg}"`, { cwd: repo.path });
+    await execAsync(`git add -A && git commit -m "${commitMsg}"`, {
+      cwd: repo.path,
+    });
 
     const branch = await this.getCurrentBranch(repo);
     await execAsync(`git push -u origin ${branch}`, { cwd: repo.path });
@@ -1608,28 +1916,46 @@ export class CodeAgentModule extends DarwinModule {
     const prUrl = await this.createPR(repo, task);
 
     // Close Beads task
-    await this.execBeads(repo, `close ${task.id} --reason "PR: ${prUrl}"`, { timeoutMs: 10_000 });
+    await this.execBeads(repo, `close ${task.id} --reason "PR: ${prUrl}"`, {
+      timeoutMs: 10_000,
+    });
 
-    eventBus.publish('code', 'task_completed', { taskId: task.id, repo: repo.name, prUrl });
+    eventBus.publish("code", "task_completed", {
+      taskId: task.id,
+      repo: repo.name,
+      prUrl,
+    });
   }
 
   /**
    * Handle task failure
    */
-  private async handleTaskFailure(task: BeadTask, repo: RepoConfig, error: string): Promise<void> {
+  private async handleTaskFailure(
+    task: BeadTask,
+    repo: RepoConfig,
+    error: string
+  ): Promise<void> {
     this.logger.error(`Task ${task.id} failed (${repo.name}): ${error}`);
 
     // Rollback changes
-    await execAsync('git reset --hard HEAD && git clean -fd', { cwd: repo.path }).catch(() => {});
+    await execAsync("git reset --hard HEAD && git clean -fd", {
+      cwd: repo.path,
+    }).catch(() => {});
 
     // Update Beads
     await this.execBeads(
       repo,
-      `update ${task.id} --status blocked --notes "${error.replace(/"/g, '\\"').slice(0, 200)}"`,
+      `update ${task.id} --status blocked --notes "${error
+        .replace(/"/g, '\\"')
+        .slice(0, 200)}"`,
       { timeoutMs: 10_000 }
     ).catch(() => {});
 
-    eventBus.publish('code', 'task_failed', { taskId: task.id, repo: repo.name, error });
+    eventBus.publish("code", "task_failed", {
+      taskId: task.id,
+      repo: repo.name,
+      error,
+    });
   }
 
   /**
@@ -1637,7 +1963,7 @@ export class CodeAgentModule extends DarwinModule {
    */
   private async stopCurrentSession(
     reason?: string,
-    endReason: SessionEndReason = 'stopped'
+    endReason: SessionEndReason = "stopped"
   ): Promise<{ success: boolean }> {
     if (!this.currentSession) {
       return { success: false };
@@ -1645,7 +1971,7 @@ export class CodeAgentModule extends DarwinModule {
 
     const { terminal, taskId, repo } = this.currentSession;
 
-    this.logger.info(`Stopping session: ${reason || 'user request'}`);
+    this.logger.info(`Stopping session: ${reason || "user request"}`);
     if (!this.sessionEndReason) {
       this.sessionEndReason = endReason;
     }
@@ -1661,7 +1987,11 @@ export class CodeAgentModule extends DarwinModule {
     this.currentSession = null;
     this.lastOutputAt = null;
 
-    eventBus.publish('code', 'task_stopped', { taskId, repo: repo.name, reason });
+    eventBus.publish("code", "task_stopped", {
+      taskId,
+      repo: repo.name,
+      reason,
+    });
     return { success: true };
   }
 
@@ -1685,12 +2015,15 @@ export class CodeAgentModule extends DarwinModule {
         return { available: true, utilization: 0 }; // Assume available if can't check
       }
 
-      const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'anthropic-beta': 'oauth-2025-04-20',
-        },
-      });
+      const response = await fetch(
+        "https://api.anthropic.com/api/oauth/usage",
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "anthropic-beta": "oauth-2025-04-20",
+          },
+        }
+      );
 
       if (!response.ok) {
         return { available: true, utilization: 0 };
@@ -1716,7 +2049,7 @@ export class CodeAgentModule extends DarwinModule {
     utilization: number;
     resetsAt?: string;
   }> {
-    if (agent === 'claude') {
+    if (agent === "claude") {
       return this.checkClaudeCapacity();
     }
 
@@ -1738,9 +2071,18 @@ export class CodeAgentModule extends DarwinModule {
       agent: CodeAgentBackend;
     } | null;
     capacity: { available: boolean; utilization: number };
-    queue: Array<{ taskId: string; title: string; repo: string; priority: number }>;
+    queue: Array<{
+      taskId: string;
+      title: string;
+      repo: string;
+      priority: number;
+    }>;
     repos: Array<{ name: string; enabled: boolean; taskCount: number }>;
-    agent: { default: CodeAgentBackend; active?: CodeAgentBackend; available: CodeAgentBackend[] };
+    agent: {
+      default: CodeAgentBackend;
+      active?: CodeAgentBackend;
+      available: CodeAgentBackend[];
+    };
   }> {
     const now = Date.now();
     const capacity = await this.checkAgentCapacity(this.config.agent);
@@ -1757,11 +2099,14 @@ export class CodeAgentModule extends DarwinModule {
       activeTask: this.currentSession
         ? {
             taskId: this.currentSession.taskId,
-            repo: this.currentSession.repo.name || this.currentSession.repo.path,
+            repo:
+              this.currentSession.repo.name || this.currentSession.repo.path,
             startedAt: this.currentSession.startedAt,
             state: this.currentSession.terminal.getState(),
             outputLines: this.currentSession.outputBuffer.length,
-            lastOutputAt: this.lastOutputAt ? this.lastOutputAt.toISOString() : null,
+            lastOutputAt: this.lastOutputAt
+              ? this.lastOutputAt.toISOString()
+              : null,
             secondsSinceOutput: this.lastOutputAt
               ? Math.round((now - this.lastOutputAt.getTime()) / 1000)
               : null,
@@ -1802,7 +2147,7 @@ export class CodeAgentModule extends DarwinModule {
       return { success: false, message: `Unknown repo: ${args.repo}` };
     }
 
-    const type = args.type || 'task';
+    const type = args.type || "task";
     const priority = args.priority || 2;
 
     try {
@@ -1814,13 +2159,17 @@ export class CodeAgentModule extends DarwinModule {
       const result = JSON.parse(stdout);
       const taskId = result.id || result.issue?.id;
 
-      eventBus.publish('code', 'task_created', {
+      eventBus.publish("code", "task_created", {
         taskId,
         repo: repo.name,
         title: args.title,
       });
 
-      return { success: true, taskId, message: `Created ${taskId} in ${repo.name}` };
+      return {
+        success: true,
+        taskId,
+        message: `Created ${taskId} in ${repo.name}`,
+      };
     } catch (error) {
       return { success: false, message: `Failed to create task: ${error}` };
     }
@@ -1847,33 +2196,39 @@ export class CodeAgentModule extends DarwinModule {
 
   private detectStartupError(buffer: string): string | null {
     const lower = buffer.toLowerCase();
-    if (lower.includes('command not found') || lower.includes('not recognized as an internal')) {
-      return 'Agent CLI not found. Ensure the CLI is installed and on PATH.';
+    if (
+      lower.includes("command not found") ||
+      lower.includes("not recognized as an internal")
+    ) {
+      return "Agent CLI not found. Ensure the CLI is installed and on PATH.";
     }
-    if (lower.includes('not logged in') || lower.includes('not authenticated')) {
-      return 'Agent CLI not authenticated. Run the login command for the CLI.';
+    if (
+      lower.includes("not logged in") ||
+      lower.includes("not authenticated")
+    ) {
+      return "Agent CLI not authenticated. Run the login command for the CLI.";
     }
-    if (lower.includes('api key') && lower.includes('missing')) {
-      return 'Agent CLI missing API key. Configure credentials and try again.';
+    if (lower.includes("api key") && lower.includes("missing")) {
+      return "Agent CLI missing API key. Configure credentials and try again.";
     }
-    if (lower.includes('permission denied')) {
-      return 'Agent CLI failed to start due to permission denied.';
+    if (lower.includes("permission denied")) {
+      return "Agent CLI failed to start due to permission denied.";
     }
     return null;
   }
 
   private shouldRetryNoDb(error: unknown): boolean {
     const message = String(error).toLowerCase();
-    if (message.includes('no beads database found')) {
+    if (message.includes("no beads database found")) {
       return true;
     }
-    if (message.includes('beads database') && message.includes('not found')) {
+    if (message.includes("beads database") && message.includes("not found")) {
       return true;
     }
-    if (message.includes('timed out') || message.includes('timeout')) {
+    if (message.includes("timed out") || message.includes("timeout")) {
       return true;
     }
-    if (typeof error === 'object' && error !== null) {
+    if (typeof error === "object" && error !== null) {
       const maybe = error as { killed?: boolean; signal?: string };
       if (maybe.killed && maybe.signal) {
         return true;
@@ -1904,19 +2259,24 @@ export class CodeAgentModule extends DarwinModule {
         throw error;
       }
 
-      this.logger.warn(`Beads command failed in ${repo.name}, retrying with --no-db: bd ${args}`);
+      this.logger.warn(
+        `Beads command failed in ${repo.name}, retrying with --no-db: bd ${args}`
+      );
       return run(`bd --no-db ${args}`);
     }
   }
 
-  private async taskExistsInRepo(repo: RepoConfig, taskId: string): Promise<boolean> {
+  private async taskExistsInRepo(
+    repo: RepoConfig,
+    taskId: string
+  ): Promise<boolean> {
     const tasks = await this.readTasksFromFile(repo);
     return tasks.some((task) => task.id === taskId);
   }
 
   private async tryRecoverFromLimit(
     terminal: TerminalController,
-    agent: CodeAgentBackend = 'claude'
+    agent: CodeAgentBackend = "claude"
   ): Promise<boolean> {
     if (this.limitRecoveryAttempts >= 1) {
       return false;
@@ -1929,12 +2289,23 @@ export class CodeAgentModule extends DarwinModule {
       return false;
     }
 
-    this.logger.warn('Limit reached message detected, but capacity looks available. Probing CLI...');
+    this.logger.warn(
+      "Limit reached message detected, but capacity looks available. Probing CLI..."
+    );
 
-    await terminal.executeAction({ type: 'enter', reason: 'Probe after limit message' });
-    const probe = await terminal.waitForState(['ready', 'question', 'limit_reached', 'error'], 10_000);
+    await terminal.executeAction({
+      type: "enter",
+      reason: "Probe after limit message",
+    });
+    const probe = await terminal.waitForState(
+      ["ready", "question", "limit_reached", "error"],
+      10_000
+    );
 
-    if (probe.reached && (probe.state === 'ready' || probe.state === 'question')) {
+    if (
+      probe.reached &&
+      (probe.state === "ready" || probe.state === "question")
+    ) {
       return true;
     }
 
@@ -1955,20 +2326,27 @@ export class CodeAgentModule extends DarwinModule {
     return true;
   }
 
-  private applyLimitCooldown(resetTime: Date | undefined, source: 'cli' | 'api'): void {
+  private applyLimitCooldown(
+    resetTime: Date | undefined,
+    source: "cli" | "api"
+  ): void {
     const now = Date.now();
     const resetMs = resetTime?.getTime();
     const fallback = now + 60 * 60 * 1000;
     const target = Number.isFinite(resetMs) ? resetMs! : fallback;
     const untilMs = Math.max(target, now + 10_000);
-    const nextMs = this.limitUntil ? Math.max(this.limitUntil.getTime(), untilMs) : untilMs;
+    const nextMs = this.limitUntil
+      ? Math.max(this.limitUntil.getTime(), untilMs)
+      : untilMs;
 
     if (this.limitUntil && this.limitUntil.getTime() >= nextMs) {
       return;
     }
 
     this.limitUntil = new Date(nextMs);
-    this.logger.warn(`Claude usage limit active until ${this.limitUntil.toISOString()} (${source})`);
+    this.logger.warn(
+      `Claude usage limit active until ${this.limitUntil.toISOString()} (${source})`
+    );
 
     if (this.limitTimer) {
       clearTimeout(this.limitTimer);
@@ -1984,7 +2362,7 @@ export class CodeAgentModule extends DarwinModule {
 
   private resumeAfterLimit(): void {
     if (this.pauseCheckFn?.()) {
-      this.logger.debug('Darwin paused - deferring limit resume');
+      this.logger.debug("Darwin paused - deferring limit resume");
       return;
     }
 
@@ -1992,9 +2370,11 @@ export class CodeAgentModule extends DarwinModule {
     this.limitResumeTask = null;
 
     if (resume) {
-      void this.startTask(resume.taskId, resume.repoName, 'continue').catch((error) => {
-        this.logger.error(`Failed to resume task ${resume.taskId}: ${error}`);
-      });
+      void this.startTask(resume.taskId, resume.repoName, "continue").catch(
+        (error) => {
+          this.logger.error(`Failed to resume task ${resume.taskId}: ${error}`);
+        }
+      );
       return;
     }
 
@@ -2006,19 +2386,26 @@ export class CodeAgentModule extends DarwinModule {
   private buildBranchName(taskId: string, title: string): string {
     const safeName = title
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/[^a-z0-9]+/g, "-")
       .slice(0, 40);
     return `${taskId}-${safeName}`;
   }
 
-  private shouldRequireResumeDecision(task: BeadTask, state: TaskRepoState): boolean {
+  private shouldRequireResumeDecision(
+    task: BeadTask,
+    state: TaskRepoState
+  ): boolean {
     const status = task.status.toLowerCase();
     const hasWork =
-      state.branchExists && (state.dirty || state.untracked > 0 || state.ahead > 0);
-    return hasWork || status === 'in_progress';
+      state.branchExists &&
+      (state.dirty || state.untracked > 0 || state.ahead > 0);
+    return hasWork || status === "in_progress";
   }
 
-  private async getTaskRepoState(repo: RepoConfig, task: BeadTask): Promise<TaskRepoState> {
+  private async getTaskRepoState(
+    repo: RepoConfig,
+    task: BeadTask
+  ): Promise<TaskRepoState> {
     const baseRef = await this.getDefaultBranchRef(repo);
     const currentBranch = await this.getCurrentBranchLabel(repo);
     const branchInfo = await this.resolveTaskBranch(repo, task);
@@ -2026,7 +2413,9 @@ export class CodeAgentModule extends DarwinModule {
     const { ahead, behind } = branchInfo.branch
       ? await this.getAheadBehind(repo, baseRef, branchInfo.branch)
       : { ahead: 0, behind: 0 };
-    const lastCommit = branchInfo.branch ? await this.getLastCommit(repo, branchInfo.branch) : undefined;
+    const lastCommit = branchInfo.branch
+      ? await this.getLastCommit(repo, branchInfo.branch)
+      : undefined;
 
     return {
       taskId: task.id,
@@ -2069,25 +2458,33 @@ export class CodeAgentModule extends DarwinModule {
     return { branch: undefined, candidates: [] };
   }
 
-  private async listTaskBranches(repo: RepoConfig, taskId: string): Promise<string[]> {
+  private async listTaskBranches(
+    repo: RepoConfig,
+    taskId: string
+  ): Promise<string[]> {
     try {
       const { stdout } = await execAsync(
         `git branch --list "${this.escapeShellArg(taskId)}-*"`,
         { cwd: repo.path }
       );
       return stdout
-        .split('\n')
-        .map((line) => line.replace(/^\* /, '').trim())
+        .split("\n")
+        .map((line) => line.replace(/^\* /, "").trim())
         .filter(Boolean);
     } catch {
       return [];
     }
   }
 
-  private async branchExists(repo: RepoConfig, branch: string): Promise<boolean> {
+  private async branchExists(
+    repo: RepoConfig,
+    branch: string
+  ): Promise<boolean> {
     try {
       await execAsync(
-        `git show-ref --verify --quiet "refs/heads/${this.escapeShellArg(branch)}"`,
+        `git show-ref --verify --quiet "refs/heads/${this.escapeShellArg(
+          branch
+        )}"`,
         { cwd: repo.path }
       );
       return true;
@@ -2098,16 +2495,19 @@ export class CodeAgentModule extends DarwinModule {
 
   private async getDefaultBranchRef(repo: RepoConfig): Promise<string> {
     try {
-      const { stdout } = await execAsync('git symbolic-ref --short refs/remotes/origin/HEAD', {
-        cwd: repo.path,
-      });
+      const { stdout } = await execAsync(
+        "git symbolic-ref --short refs/remotes/origin/HEAD",
+        {
+          cwd: repo.path,
+        }
+      );
       const ref = stdout.trim();
       if (ref) return ref;
     } catch {
       // Ignore and fall back.
     }
 
-    const candidates = ['main', 'master'];
+    const candidates = ["main", "master"];
     for (const candidate of candidates) {
       if (await this.branchExists(repo, candidate)) {
         return candidate;
@@ -2115,12 +2515,14 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     const current = await this.getCurrentBranchLabel(repo);
-    return current !== '(unknown)' ? current : 'main';
+    return current !== "(unknown)" ? current : "main";
   }
 
   private async getCurrentBranchLabel(repo: RepoConfig): Promise<string> {
     try {
-      const { stdout } = await execAsync('git branch --show-current', { cwd: repo.path });
+      const { stdout } = await execAsync("git branch --show-current", {
+        cwd: repo.path,
+      });
       const branch = stdout.trim();
       if (branch) return branch;
     } catch {
@@ -2128,23 +2530,27 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     try {
-      const { stdout } = await execAsync('git rev-parse --short HEAD', { cwd: repo.path });
+      const { stdout } = await execAsync("git rev-parse --short HEAD", {
+        cwd: repo.path,
+      });
       const hash = stdout.trim();
       if (hash) return `(detached ${hash})`;
     } catch {
       // Ignore and fall back.
     }
 
-    return '(unknown)';
+    return "(unknown)";
   }
 
   private async getRepoStatus(
     repo: RepoConfig
   ): Promise<{ dirty: boolean; modified: number; untracked: number }> {
     try {
-      const { stdout } = await execAsync('git status --porcelain', { cwd: repo.path });
-      const lines = stdout.split('\n').filter(Boolean);
-      const untracked = lines.filter((line) => line.startsWith('??')).length;
+      const { stdout } = await execAsync("git status --porcelain", {
+        cwd: repo.path,
+      });
+      const lines = stdout.split("\n").filter(Boolean);
+      const untracked = lines.filter((line) => line.startsWith("??")).length;
       const modified = lines.length - untracked;
       return { dirty: lines.length > 0, modified, untracked };
     } catch {
@@ -2182,7 +2588,7 @@ export class CodeAgentModule extends DarwinModule {
         `git log -1 --pretty=format:%H|%s|%cI "${this.escapeShellArg(ref)}"`,
         { cwd: repo.path }
       );
-      const [hash, subject, date] = stdout.trim().split('|');
+      const [hash, subject, date] = stdout.trim().split("|");
       if (!hash) return undefined;
       return { hash, subject, date };
     } catch {
@@ -2190,8 +2596,13 @@ export class CodeAgentModule extends DarwinModule {
     }
   }
 
-  private async resetTaskBranch(repo: RepoConfig, task: BeadTask, state: TaskRepoState): Promise<void> {
-    const branch = state.taskBranch || this.buildBranchName(task.id, task.title);
+  private async resetTaskBranch(
+    repo: RepoConfig,
+    task: BeadTask,
+    state: TaskRepoState
+  ): Promise<void> {
+    const branch =
+      state.taskBranch || this.buildBranchName(task.id, task.title);
     const baseRef = state.baseRef || (await this.getDefaultBranchRef(repo));
     const safeBranch = this.escapeShellArg(branch);
     const safeBase = this.escapeShellArg(baseRef);
@@ -2199,14 +2610,20 @@ export class CodeAgentModule extends DarwinModule {
     if (await this.branchExists(repo, branch)) {
       await execAsync(`git checkout "${safeBranch}"`, { cwd: repo.path });
     } else {
-      await execAsync(`git checkout -b "${safeBranch}" "${safeBase}"`, { cwd: repo.path });
+      await execAsync(`git checkout -b "${safeBranch}" "${safeBase}"`, {
+        cwd: repo.path,
+      });
     }
 
     await execAsync(`git reset --hard "${safeBase}"`, { cwd: repo.path });
-    await execAsync('git clean -fd', { cwd: repo.path });
+    await execAsync("git clean -fd", { cwd: repo.path });
   }
 
-  private async createBranch(repo: RepoConfig, taskId: string, title: string): Promise<string> {
+  private async createBranch(
+    repo: RepoConfig,
+    taskId: string,
+    title: string
+  ): Promise<string> {
     const branch = this.buildBranchName(taskId, title);
 
     try {
@@ -2215,14 +2632,16 @@ export class CodeAgentModule extends DarwinModule {
     } catch (error) {
       const errorStr = String(error);
 
-      if (errorStr.includes('already exists')) {
+      if (errorStr.includes("already exists")) {
         // Branch exists - check it out instead
         this.logger.info(`Branch ${branch} exists, checking out`);
         await execAsync(`git checkout ${branch}`, { cwd: repo.path });
 
         // Pull latest if remote exists
         try {
-          await execAsync(`git pull origin ${branch} --rebase`, { cwd: repo.path });
+          await execAsync(`git pull origin ${branch} --rebase`, {
+            cwd: repo.path,
+          });
         } catch {
           // No remote branch or pull failed - that's fine, continue with local
         }
@@ -2236,13 +2655,21 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   private async getCurrentBranch(repo: RepoConfig): Promise<string> {
-    const { stdout } = await execAsync('git branch --show-current', { cwd: repo.path });
+    const { stdout } = await execAsync("git branch --show-current", {
+      cwd: repo.path,
+    });
     return stdout.trim();
   }
 
-  private async updateTaskStatus(repo: RepoConfig, taskId: string, status: string): Promise<void> {
+  private async updateTaskStatus(
+    repo: RepoConfig,
+    taskId: string,
+    status: string
+  ): Promise<void> {
     try {
-      await this.execBeads(repo, `update ${taskId} --status ${status}`, { timeoutMs: 10_000 });
+      await this.execBeads(repo, `update ${taskId} --status ${status}`, {
+        timeoutMs: 10_000,
+      });
     } catch (error) {
       this.logger.warn(`Failed to update ${taskId} in ${repo.name}: ${error}`);
     }
@@ -2260,11 +2687,15 @@ export class CodeAgentModule extends DarwinModule {
       return { passed: true, output: stdout + stderr };
     } catch (error) {
       const e = error as { stdout?: string; stderr?: string };
-      return { passed: false, output: (e.stdout || '') + (e.stderr || '') };
+      return { passed: false, output: (e.stdout || "") + (e.stderr || "") };
     }
   }
 
-  private async generatePrompt(repo: RepoConfig, task: BeadTask, branchName: string): Promise<string> {
+  private async generatePrompt(
+    repo: RepoConfig,
+    task: BeadTask,
+    branchName: string
+  ): Promise<string> {
     // Use Brain's reasoner for better prompts
     const guidance = await this.brain
       .reason(
@@ -2272,12 +2703,12 @@ export class CodeAgentModule extends DarwinModule {
 Write 2-3 sentences of guidance for a coding agent working on:
 Task: ${task.title}
 Type: ${task.type}
-Description: ${task.description || 'N/A'}
+Description: ${task.description || "N/A"}
 
 Be specific about files to check and approach to take. Under 50 words:
     `
       )
-      .catch(() => 'Focus on the task, make minimal changes, run tests.');
+      .catch(() => "Focus on the task, make minimal changes, run tests.");
 
     const testCommand = repo.testCommand || this.config.defaults.testCommand;
 
@@ -2291,7 +2722,7 @@ Path: ${repo.path}
 Branch: ${branchName}
 
 ## Description
-${task.description || 'See title.'}
+${task.description || "See title."}
 
 ## Guidance
 ${guidance}
@@ -2309,7 +2740,7 @@ Begin.
   }
 
   private async generateCommitMessage(task: BeadTask): Promise<string> {
-    const type = task.type === 'bug' ? 'fix' : 'feat';
+    const type = task.type === "bug" ? "fix" : "feat";
     return `${type}(${task.id}): ${task.title.toLowerCase().slice(0, 50)}`;
   }
 
@@ -2328,7 +2759,12 @@ Include what was changed and how it was tested. Under 100 words:
       .catch(() => `Closes ${task.id}`);
 
     const { stdout } = await execAsync(
-      `gh pr create --title "${task.id}: ${task.title}" --body "${description.replace(/"/g, '\\"')}" --base main --head ${branch}`,
+      `gh pr create --title "${task.id}: ${
+        task.title
+      }" --body "${description.replace(
+        /"/g,
+        '\\"'
+      )}" --base main --head ${branch}`,
       { cwd: repo.path }
     );
 
