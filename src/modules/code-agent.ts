@@ -1026,16 +1026,6 @@ export class CodeAgentModule extends DarwinModule {
     }, this.config.defaults.maxSessionMinutes * 60 * 1000);
 
     try {
-      // Start agent CLI in REPL mode
-      const { command, args } = this.getAgentCommand(selectedAgent);
-      await terminal.start(command, args);
-
-      const outputSeen = await terminal.waitForOutput(/[\s\S]/, 5000);
-      if (!outputSeen.found) {
-        this.logger.warn('No output from agent after start, sending newline');
-        await terminal.executeAction({ type: 'enter', reason: 'Kick prompt' });
-      }
-
       let promptCache: string | null = null;
       const ensurePrompt = async (): Promise<string> => {
         if (!promptCache) {
@@ -1044,13 +1034,54 @@ export class CodeAgentModule extends DarwinModule {
         return promptCache;
       };
 
+      const { command, args } = this.getAgentCommand(selectedAgent);
+      const agentArgs = args ? [...args] : [];
+      let inlinePrompt = false;
+
+      if (selectedAgent === 'claude') {
+        inlinePrompt = true;
+        const hasPermissionMode = agentArgs.includes('--permission-mode') ||
+          agentArgs.some((arg) => arg.startsWith('--permission-mode='));
+        if (!hasPermissionMode) {
+          agentArgs.push('--permission-mode', 'acceptEdits');
+        }
+        const hasPromptArg = agentArgs.includes('-p') ||
+          agentArgs.includes('--prompt') ||
+          agentArgs.some((arg) => arg.startsWith('--prompt='));
+        if (!hasPromptArg) {
+          agentArgs.push('-p', await ensurePrompt());
+        }
+      }
+
+      // Start agent CLI with inline prompt for Claude
+      await terminal.start(command, agentArgs);
+
+      const outputSeen = await terminal.waitForOutput(/[\s\S]/, 5000);
+      if (!outputSeen.found && !inlinePrompt) {
+        this.logger.warn('No output from agent after start, sending newline');
+        await terminal.executeAction({ type: 'enter', reason: 'Kick prompt' });
+      }
+
       const sendPrompt = async (reason: string, clearBuffer = true) => {
         if (clearBuffer) {
           terminal.clearBuffer();
         }
         const prompt = await ensurePrompt();
         this.logger.info(reason);
-        await terminal.executeAction({ type: 'send', content: prompt, reason });
+        await terminal.executeAction({ type: 'type', content: prompt, reason: `${reason} (type)` });
+        await terminal.executeAction({ type: 'wait', waitMs: 50, reason: 'Allow paste to settle' });
+        await terminal.executeAction({ type: 'enter', reason: `${reason} (submit)` });
+
+        const progressed = await terminal.waitForState(['processing', 'question', 'limit_reached', 'error'], 2000);
+        if (!progressed.reached) {
+          const observation = terminal.getObservation();
+          const pasted = /pasted text/i.test(observation.recentOutput);
+          const idleReady = observation.state === 'ready' && observation.promptVisible;
+          if (idleReady && pasted) {
+            this.logger.warn('Claude still idle after paste, pressing enter again');
+            await terminal.executeAction({ type: 'enter', reason: 'Submit pasted prompt' });
+          }
+        }
 
         eventBus.publish('code', 'task_started', {
           taskId,
@@ -1066,6 +1097,28 @@ export class CodeAgentModule extends DarwinModule {
           state,
         };
       };
+
+      const startError = this.detectStartupError(terminal.getFullBuffer());
+      if (startError) {
+        await this.stopCurrentSession('Startup error', 'start_error');
+        return { success: false, message: startError };
+      }
+
+      if (inlinePrompt) {
+        this.logger.info('Claude started with inline prompt');
+        eventBus.publish('code', 'task_started', {
+          taskId,
+          title: task.title,
+          repo: repo.name,
+          branch: branchName,
+          agent: selectedAgent,
+        });
+        return {
+          success: true,
+          message: `Started ${taskId} on branch ${branchName} (${repo.name})`,
+          state,
+        };
+      }
 
       // Wait for Claude to be ready
       this.logger.info('Waiting for Claude prompt...');
@@ -1123,10 +1176,10 @@ export class CodeAgentModule extends DarwinModule {
         return { success: false, message: startError || 'Claude Code failed to start' };
       }
 
-      const startError = this.detectStartupError(terminal.getFullBuffer());
-      if (startError) {
+      const startErrorAfterReady = this.detectStartupError(terminal.getFullBuffer());
+      if (startErrorAfterReady) {
         await this.stopCurrentSession('Startup error', 'start_error');
-        return { success: false, message: startError };
+        return { success: false, message: startErrorAfterReady };
       }
 
       return await sendPrompt('Claude is ready, sending task prompt...');

@@ -42,6 +42,23 @@ function stripAnsi(str: string): string {
             .replace(/[\x00-\x09\x0b\x0c\x0e-\x1f]/g, ''); // Control chars except \n\r
 }
 
+function formatArgsForLog(args: string[]): string {
+  const redacted = [...args];
+  for (let i = 0; i < redacted.length; i += 1) {
+    const value = redacted[i];
+    if (value === '-p' || value === '--prompt') {
+      if (i + 1 < redacted.length) {
+        redacted[i + 1] = '<prompt>';
+      }
+      continue;
+    }
+    if (value.startsWith('--prompt=')) {
+      redacted[i] = '--prompt=<prompt>';
+    }
+  }
+  return redacted.join(' ');
+}
+
 function normalizeBackend(value: string | undefined): TerminalBackend | null {
   if (!value) return null;
   const normalized = value.toLowerCase();
@@ -144,7 +161,8 @@ export class TerminalController extends EventEmitter {
       COLORTERM: 'truecolor',
     };
 
-    this.logger.info(`Starting terminal (${this.config.backend}): ${command} ${args.join(' ')}`);
+    const formattedArgs = args.length > 0 ? ` ${formatArgsForLog(args)}` : '';
+    this.logger.info(`Starting terminal (${this.config.backend}): ${command}${formattedArgs}`);
     this.logger.debug(`CWD: ${this.config.cwd}`);
 
     try {
@@ -601,8 +619,10 @@ export class TerminalController extends EventEmitter {
     }
 
     // If we have output and not in specific states, we're processing
-    if (data.trim() && this.state === 'waiting_response') {
-      this.setState('processing');
+    if (data.trim()) {
+      if (this.state === 'waiting_response' || this.state === 'starting') {
+        this.setState('processing');
+      }
     }
   }
 

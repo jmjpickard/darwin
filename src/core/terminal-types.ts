@@ -131,8 +131,8 @@ export interface TerminalPatterns {
  * Default patterns for Claude Code REPL
  */
 export const DEFAULT_PATTERNS: TerminalPatterns = {
-  // Claude prompt is typically ">" or "claude>" at start of line
-  prompt: /^\s*(?:>|[a-z0-9._-]+>)\s*$/im,
+  // Claude prompt is typically ">" or "claude>", sometimes with "Try ..." suggestions
+  prompt: /^\s*(?:>|[a-z0-9._-]+>)\s*(?:$|try\s+.+)$/im,
 
   // Limit messages
   limitReached: /(?:^|\n).*?(?:usage limit reached|claude.*limit.*(?:reached|exceeded|hit)|limit reached.*(?:resets?|try again)|quota.*(?:reached|exceeded|hit)|rate limit.*(?:resets?|try again))/im,
