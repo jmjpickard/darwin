@@ -143,6 +143,7 @@ export class CodeAgentModule extends DarwinModule {
   private limitResumeTask: { taskId: string; repoName?: string } | null = null;
   private sessionEndReason: SessionEndReason | null = null;
   private limitRecoveryAttempts = 0;
+  private lastOutputAt: Date | null = null;
 
   constructor(brain: DarwinBrain, config: ModuleConfig) {
     super(brain, config);
@@ -224,6 +225,51 @@ export class CodeAgentModule extends DarwinModule {
    */
   getOutputBuffer(): string[] {
     return this.currentSession?.outputBuffer.slice(-100) || [];
+  }
+
+  private getOutputSnapshot(args: { limit?: number; since?: number } = {}): {
+    active: boolean;
+    taskId?: string;
+    repo?: string;
+    state?: TerminalState;
+    lines?: string[];
+    totalLines?: number;
+    nextCursor?: number;
+    truncated?: boolean;
+    lastOutputAt?: string | null;
+    secondsSinceOutput?: number | null;
+    message?: string;
+  } {
+    const session = this.currentSession;
+    if (!session) {
+      return { active: false, message: 'No active Claude session' };
+    }
+
+    const total = session.outputBuffer.length;
+    const limitRaw = typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.floor(args.limit) : 50;
+    const limit = Math.max(1, limitRaw);
+    const since = typeof args.since === 'number' && Number.isFinite(args.since) ? Math.max(0, Math.floor(args.since)) : null;
+    const start = since ?? Math.max(0, total - limit);
+    const safeStart = Math.min(start, total);
+    const end = since !== null ? Math.min(total, safeStart + limit) : total;
+    const lines = session.outputBuffer.slice(safeStart, end);
+    const lastOutputAt = this.lastOutputAt ? this.lastOutputAt.toISOString() : null;
+    const secondsSinceOutput = this.lastOutputAt
+      ? Math.round((Date.now() - this.lastOutputAt.getTime()) / 1000)
+      : null;
+
+    return {
+      active: true,
+      taskId: session.taskId,
+      repo: session.repo.name || session.repo.path,
+      state: session.terminal.getState(),
+      lines,
+      totalLines: total,
+      nextCursor: end,
+      truncated: safeStart > 0,
+      lastOutputAt,
+      secondsSinceOutput,
+    };
   }
 
   private registerTools(): void {
@@ -349,6 +395,20 @@ export class CodeAgentModule extends DarwinModule {
         properties: {},
       },
       async () => this.getAgentStatus()
+    );
+
+    // Get recent Claude output
+    this.registerTool(
+      'code_get_output',
+      'Get recent output from the active Claude session',
+      {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max output chunks to return (default 50)' },
+          since: { type: 'number', description: 'Return chunks after this index (0-based cursor)' },
+        },
+      },
+      async (args) => this.getOutputSnapshot(args as { limit?: number; since?: number })
     );
 
     // Stop current task
@@ -954,6 +1014,7 @@ export class CodeAgentModule extends DarwinModule {
       task,
       agent: selectedAgent,
     };
+    this.lastOutputAt = null;
 
     // Set up event handlers
     this.setupTerminalHandlers(terminal, task, repo);
@@ -1083,6 +1144,7 @@ export class CodeAgentModule extends DarwinModule {
     // Handle all output
     terminal.on('output', (data) => {
       this.currentSession?.outputBuffer.push(data);
+      this.lastOutputAt = new Date();
       this.touch();
 
       // Notify subscribers
@@ -1549,6 +1611,7 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     this.currentSession = null;
+    this.lastOutputAt = null;
 
     eventBus.publish('code', 'task_stopped', { taskId, repo: repo.name, reason });
     return { success: true };
@@ -1622,6 +1685,8 @@ export class CodeAgentModule extends DarwinModule {
       startedAt: Date;
       state: TerminalState;
       outputLines: number;
+      lastOutputAt: string | null;
+      secondsSinceOutput: number | null;
       agent: CodeAgentBackend;
     } | null;
     capacity: { available: boolean; utilization: number };
@@ -1629,6 +1694,7 @@ export class CodeAgentModule extends DarwinModule {
     repos: Array<{ name: string; enabled: boolean; taskCount: number }>;
     agent: { default: CodeAgentBackend; active?: CodeAgentBackend; available: CodeAgentBackend[] };
   }> {
+    const now = Date.now();
     const capacity = await this.checkAgentCapacity(this.config.agent);
     const tasks = await this.getReadyTasks(20);
 
@@ -1647,6 +1713,10 @@ export class CodeAgentModule extends DarwinModule {
             startedAt: this.currentSession.startedAt,
             state: this.currentSession.terminal.getState(),
             outputLines: this.currentSession.outputBuffer.length,
+            lastOutputAt: this.lastOutputAt ? this.lastOutputAt.toISOString() : null,
+            secondsSinceOutput: this.lastOutputAt
+              ? Math.round((now - this.lastOutputAt.getTime()) / 1000)
+              : null,
             agent: this.currentSession.agent,
           }
         : null,
