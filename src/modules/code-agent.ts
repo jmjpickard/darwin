@@ -1255,16 +1255,40 @@ export class CodeAgentModule extends DarwinModule {
         if (!progressed.reached) {
           const observation = terminal.getObservation();
           const pasted = /pasted text/i.test(observation.recentOutput);
-          const idleReady =
-            observation.state === "ready" && observation.promptVisible;
-          if (idleReady && pasted) {
+          // After enter, state is 'waiting_response', not 'ready'
+          // If we see the paste message and didn't progress, try enter again
+          // Don't require promptVisible since pasted text is on the prompt line
+          const stuckAfterPaste =
+            (observation.state === "waiting_response" ||
+              observation.state === "ready") &&
+            pasted;
+          if (stuckAfterPaste) {
             this.logger.warn(
               "Claude still idle after paste, pressing enter again"
             );
+            // Primary enter now uses \n, try \r as fallback
             await terminal.executeAction({
-              type: "enter",
-              reason: "Submit pasted prompt",
+              type: "type",
+              content: "\r",
+              reason: "Submit pasted prompt (CR fallback)",
             });
+            // Wait a bit more for the retry to take effect
+            const retryResult = await terminal.waitForState(
+              ["processing", "question", "limit_reached", "error"],
+              3000
+            );
+            // If still stuck, try another enter (which uses \n)
+            if (!retryResult.reached) {
+              this.logger.warn("Still stuck, trying LF");
+              await terminal.executeAction({
+                type: "enter",
+                reason: "Submit pasted prompt (LF)",
+              });
+              await terminal.waitForState(
+                ["processing", "question", "limit_reached", "error"],
+                2000
+              );
+            }
           }
         }
 

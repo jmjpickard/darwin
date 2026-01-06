@@ -296,20 +296,21 @@ export class TerminalController extends EventEmitter {
           break;
 
         case 'enter':
-          this.write('\r');
+          // Use \n (LF) - standard Unix line terminator that readline expects
+          this.write('\n');
           this.setState('waiting_response');
           break;
 
         case 'send':
           if (action.content) {
-            this.write(action.content + '\r');
+            this.write(action.content + '\n');
             this.setState('waiting_response');
           }
           break;
 
         case 'answer':
           if (action.content) {
-            this.write(action.content + '\r');
+            this.write(action.content + '\n');
             this.detectedQuestion = null;
             this.setState('waiting_response');
           }
