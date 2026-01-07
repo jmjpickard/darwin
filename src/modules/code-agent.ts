@@ -608,6 +608,36 @@ export class CodeAgentModule extends DarwinModule {
       },
       async () => this.listRepos()
     );
+
+    // Setup Claude Code permissions for a repo
+    this.registerTool(
+      "code_setup_permissions",
+      "Configure Claude Code permissions for autonomous operation in a repo",
+      {
+        type: "object",
+        properties: {
+          repo: {
+            type: "string",
+            description: "Repo name to configure",
+          },
+          extraCommands: {
+            type: "string",
+            description:
+              "Comma-separated additional Bash commands to allow (e.g., 'pytest *,cargo test')",
+          },
+        },
+        required: ["repo"],
+      },
+      async (args) => {
+        const repoName = args.repo as string;
+        const extraStr = (args.extraCommands as string | undefined) || "";
+        const extraCommands = extraStr
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        return this.setupClaudePermissions(repoName, extraCommands);
+      }
+    );
   }
 
   /**
@@ -1206,6 +1236,67 @@ export class CodeAgentModule extends DarwinModule {
     }, this.config.defaults.maxSessionMinutes * 60 * 1000);
 
     try {
+      const { command, args } = this.getAgentCommand(selectedAgent);
+      const agentArgs = args ? [...args] : [];
+
+      // Determine if this is a resume (existing work) or fresh start
+      const isResume = state.branchExists && (state.ahead > 0 || state.dirty);
+
+      // For Claude, use inline prompt mode with --permission-mode acceptEdits
+      if (selectedAgent === "claude") {
+        const inlinePrompt = this.generateInlinePrompt(task, isResume);
+        agentArgs.push("--permission-mode", "acceptEdits", "-p", inlinePrompt);
+        this.logger.info(
+          `Starting Claude with inline prompt: "${inlinePrompt.slice(0, 60)}..."`
+        );
+      }
+
+      // Start agent CLI
+      await terminal.start(command, agentArgs);
+
+      // For inline prompt mode, Claude starts working immediately
+      if (selectedAgent === "claude") {
+        // Wait briefly for any startup errors
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        const startError = this.detectStartupError(terminal.getFullBuffer());
+        if (startError) {
+          await this.stopCurrentSession("Startup error", "start_error");
+          return { success: false, message: startError };
+        }
+
+        // Check for immediate limit hit
+        const observation = terminal.getObservation();
+        if (observation.state === "limit_reached") {
+          const recovered = await this.tryRecoverFromLimit(
+            terminal,
+            selectedAgent
+          );
+          if (!recovered) {
+            return {
+              success: false,
+              message: "Claude usage limit reached, waiting for reset",
+            };
+          }
+        }
+
+        this.logger.info("Claude started with inline prompt");
+        eventBus.publish("code", "task_started", {
+          taskId,
+          title: task.title,
+          repo: repo.name,
+          branch: branchName,
+          agent: selectedAgent,
+        });
+
+        return {
+          success: true,
+          message: `Started ${taskId} on branch ${branchName} (${repo.name})`,
+          state,
+        };
+      }
+
+      // For other agents (codex), use interactive mode
       let promptCache: string | null = null;
       const ensurePrompt = async (): Promise<string> => {
         if (!promptCache) {
@@ -1214,15 +1305,8 @@ export class CodeAgentModule extends DarwinModule {
         return promptCache;
       };
 
-      const { command, args } = this.getAgentCommand(selectedAgent);
-      const agentArgs = args ? [...args] : [];
-      let inlinePrompt = false;
-
-      // Start agent CLI with inline prompt for Claude
-      await terminal.start(command, agentArgs);
-
       const outputSeen = await terminal.waitForOutput(/[\s\S]/, 5000);
-      if (!outputSeen.found && !inlinePrompt) {
+      if (!outputSeen.found) {
         this.logger.warn("No output from agent after start, sending newline");
         await terminal.executeAction({ type: "enter", reason: "Kick prompt" });
       }
@@ -1233,9 +1317,6 @@ export class CodeAgentModule extends DarwinModule {
         }
         const prompt = await ensurePrompt();
         this.logger.info(reason);
-        // Use paste_submit: paste brackets + CR in a single atomic write.
-        // Testing showed this is the cleanest submission method - immediate
-        // submission without entering multi-line mode.
         await terminal.executeAction({
           type: "paste_submit",
           content: prompt,
@@ -1249,28 +1330,22 @@ export class CodeAgentModule extends DarwinModule {
         if (!progressed.reached) {
           const observation = terminal.getObservation();
           const pasted = /pasted text/i.test(observation.recentOutput);
-          // After enter, state is 'waiting_response', not 'ready'
-          // If we see the paste message and didn't progress, try enter again
-          // Don't require promptVisible since pasted text is on the prompt line
           const stuckAfterPaste =
             (observation.state === "waiting_response" ||
               observation.state === "ready") &&
             pasted;
           if (stuckAfterPaste) {
             this.logger.warn(
-              "Claude still idle after paste, pressing enter again"
+              "Agent still idle after paste, pressing enter again"
             );
-            // Try sending another CR (enter uses \r)
             await terminal.executeAction({
               type: "enter",
               reason: "Submit pasted prompt (retry CR)",
             });
-            // Wait a bit more for the retry to take effect
             const retryResult = await terminal.waitForState(
               ["processing", "question", "limit_reached", "error"],
               3000
             );
-            // If still stuck, try LF as last resort
             if (!retryResult.reached) {
               this.logger.warn("Still stuck, trying LF");
               await terminal.executeAction({
@@ -1307,24 +1382,8 @@ export class CodeAgentModule extends DarwinModule {
         return { success: false, message: startError };
       }
 
-      if (inlinePrompt) {
-        this.logger.info("Claude started with inline prompt");
-        eventBus.publish("code", "task_started", {
-          taskId,
-          title: task.title,
-          repo: repo.name,
-          branch: branchName,
-          agent: selectedAgent,
-        });
-        return {
-          success: true,
-          message: `Started ${taskId} on branch ${branchName} (${repo.name})`,
-          state,
-        };
-      }
-
-      // Wait for Claude to be ready
-      this.logger.info("Waiting for Claude prompt...");
+      // Wait for agent to be ready
+      this.logger.info("Waiting for agent prompt...");
       const ready = await terminal.waitForState(
         ["ready", "question", "limit_reached", "error"],
         30000
@@ -1334,19 +1393,19 @@ export class CodeAgentModule extends DarwinModule {
         const observation = terminal.getObservation();
         const startError = this.detectStartupError(terminal.getFullBuffer());
         const tail = observation.recentOutput.trim().slice(-400);
-        this.logger.error("Claude did not reach ready state");
+        this.logger.error("Agent did not reach ready state");
         if (startError) {
           await this.stopCurrentSession("Failed to start", "start_error");
           return {
             success: false,
             message:
               startError ||
-              `Claude Code failed to start. Last output: ${tail || "(none)"}`,
+              `Agent failed to start. Last output: ${tail || "(none)"}`,
           };
         }
 
         this.logger.warn(
-          "Claude prompt not detected, sending task prompt anyway"
+          "Agent prompt not detected, sending task prompt anyway"
         );
         return await sendPrompt(
           "Sending task prompt without detected prompt",
@@ -1371,12 +1430,12 @@ export class CodeAgentModule extends DarwinModule {
               success: false,
               message:
                 startError ||
-                `Claude Code failed to start. Last output: ${tail || "(none)"}`,
+                `Agent failed to start. Last output: ${tail || "(none)"}`,
             };
           }
 
           this.logger.warn(
-            "Claude prompt still not detected after question, sending task prompt"
+            "Agent prompt still not detected after question, sending task prompt"
           );
           return await sendPrompt(
             "Sending task prompt after unanswered startup prompt",
@@ -1394,7 +1453,7 @@ export class CodeAgentModule extends DarwinModule {
         if (!recovered) {
           return {
             success: false,
-            message: "Claude usage limit reached, waiting for reset",
+            message: "Usage limit reached, waiting for reset",
           };
         }
       }
@@ -1404,7 +1463,7 @@ export class CodeAgentModule extends DarwinModule {
         await this.stopCurrentSession("Terminal error", "start_error");
         return {
           success: false,
-          message: startError || "Claude Code failed to start",
+          message: startError || "Agent failed to start",
         };
       }
 
@@ -1416,7 +1475,7 @@ export class CodeAgentModule extends DarwinModule {
         return { success: false, message: startErrorAfterReady };
       }
 
-      return await sendPrompt("Claude is ready, sending task prompt...");
+      return await sendPrompt("Agent is ready, sending task prompt...");
     } catch (error) {
       this.logger.error(`Failed to start Claude: ${error}`);
       await this.stopCurrentSession("Start error", "start_error");
@@ -2204,6 +2263,115 @@ export class CodeAgentModule extends DarwinModule {
     }));
   }
 
+  /**
+   * Setup Claude Code permissions for autonomous operation
+   */
+  private async setupClaudePermissions(
+    repoName: string,
+    extraCommands: string[] = []
+  ): Promise<{ success: boolean; message: string; path?: string }> {
+    const repo = this.config.repos.find((r) => r.name === repoName);
+    if (!repo) {
+      return { success: false, message: `Unknown repo: ${repoName}` };
+    }
+
+    const claudeDir = join(repo.path, ".claude");
+    const settingsPath = join(claudeDir, "settings.local.json");
+
+    // Base permissions for autonomous operation
+    const basePermissions = [
+      // Beads commands
+      "Bash(bd show:*)",
+      "Bash(bd ready:*)",
+      "Bash(bd update:*)",
+      "Bash(bd close:*)",
+      "Bash(bd create:*)",
+      "Bash(bd list:*)",
+      // Git commands
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)",
+      "Bash(git branch:*)",
+      "Bash(git log:*)",
+      "Bash(git fetch:*)",
+      // npm commands
+      "Bash(npm run *)",
+      "Bash(npm test)",
+      "Bash(npm install)",
+      // Common tools
+      "Bash(npx tsc:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npx jest:*)",
+      "Bash(npx prettier:*)",
+      "Bash(npx eslint:*)",
+    ];
+
+    // Add extra commands
+    const allPermissions = [
+      ...basePermissions,
+      ...extraCommands.map((cmd) => `Bash(${cmd})`),
+    ];
+
+    const settings = {
+      permissions: {
+        allow: allPermissions,
+      },
+    };
+
+    try {
+      // Create .claude directory
+      await execAsync(`mkdir -p "${claudeDir}"`);
+
+      // Write settings file
+      const { writeFile } = await import("fs/promises");
+      await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+
+      // Add to .gitignore if not already there
+      const gitignorePath = join(repo.path, ".gitignore");
+      try {
+        const { readFile } = await import("fs/promises");
+        const gitignore = await readFile(gitignorePath, "utf-8");
+        if (!gitignore.includes(".claude/settings.local.json")) {
+          const { appendFile } = await import("fs/promises");
+          await appendFile(
+            gitignorePath,
+            "\n# Claude Code local settings (machine-specific permissions)\n.claude/settings.local.json\n"
+          );
+        }
+      } catch {
+        // .gitignore doesn't exist or can't be read - create it
+        const { writeFile: writeGitignore } = await import("fs/promises");
+        await writeGitignore(
+          gitignorePath,
+          "# Claude Code local settings (machine-specific permissions)\n.claude/settings.local.json\n"
+        );
+      }
+
+      this.logger.info(`Configured Claude permissions for ${repoName}`);
+
+      eventBus.publish("code", "permissions_configured", {
+        repo: repoName,
+        path: settingsPath,
+        permissions: allPermissions.length,
+      });
+
+      return {
+        success: true,
+        message: `Configured ${allPermissions.length} permissions for ${repoName}`,
+        path: settingsPath,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `Failed to configure permissions: ${error}`,
+      };
+    }
+  }
+
   private escapeShellArg(value: string): string {
     return value.replace(/"/g, '\\"');
   }
@@ -2755,6 +2923,21 @@ ${guidance}
 
 Begin.
 `.trim();
+  }
+
+  /**
+   * Generate a concise CLI prompt for inline mode (-p flag)
+   */
+  private generateInlinePrompt(
+    task: BeadTask,
+    isResume: boolean
+  ): string {
+    const action = isResume ? "continue implementing" : "implement";
+    const statusNote = task.status.toLowerCase() === "in_progress"
+      ? " It has already been marked as in progress so just needs implementing."
+      : "";
+
+    return `${action} beads task ${task.id}.${statusNote} When finished please commit and push to branch.`;
   }
 
   private async generateCommitMessage(task: BeadTask): Promise<string> {
