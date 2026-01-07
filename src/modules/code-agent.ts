@@ -20,7 +20,7 @@
 
 import { exec } from "child_process";
 import { promisify } from "util";
-import { readFile } from "fs/promises";
+import { readFile, writeFile, appendFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { DarwinModule, ModuleConfig } from "../core/module.js";
 import { DarwinBrain } from "../core/brain.js";
@@ -2323,32 +2323,33 @@ export class CodeAgentModule extends DarwinModule {
     };
 
     try {
-      // Create .claude directory
-      await execAsync(`mkdir -p "${claudeDir}"`);
+      // Create .claude directory (recursive: true acts like mkdir -p)
+      await mkdir(claudeDir, { recursive: true });
+      this.logger.debug(`Created directory: ${claudeDir}`);
 
       // Write settings file
-      const { writeFile } = await import("fs/promises");
-      await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+      await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+      this.logger.debug(`Wrote settings to: ${settingsPath}`);
 
       // Add to .gitignore if not already there
       const gitignorePath = join(repo.path, ".gitignore");
       try {
-        const { readFile } = await import("fs/promises");
         const gitignore = await readFile(gitignorePath, "utf-8");
         if (!gitignore.includes(".claude/settings.local.json")) {
-          const { appendFile } = await import("fs/promises");
           await appendFile(
             gitignorePath,
             "\n# Claude Code local settings (machine-specific permissions)\n.claude/settings.local.json\n"
           );
+          this.logger.debug(`Updated .gitignore`);
         }
       } catch {
         // .gitignore doesn't exist or can't be read - create it
-        const { writeFile: writeGitignore } = await import("fs/promises");
-        await writeGitignore(
+        await writeFile(
           gitignorePath,
-          "# Claude Code local settings (machine-specific permissions)\n.claude/settings.local.json\n"
+          "# Claude Code local settings (machine-specific permissions)\n.claude/settings.local.json\n",
+          "utf-8"
         );
+        this.logger.debug(`Created .gitignore`);
       }
 
       this.logger.info(`Configured Claude permissions for ${repoName}`);
@@ -2365,6 +2366,7 @@ export class CodeAgentModule extends DarwinModule {
         path: settingsPath,
       };
     } catch (error) {
+      this.logger.error(`Failed to configure permissions: ${error}`);
       return {
         success: false,
         message: `Failed to configure permissions: ${error}`,
