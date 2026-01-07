@@ -2312,6 +2312,22 @@ export class CodeAgentModule extends DarwinModule {
       "Bash(npx jest:*)",
       "Bash(npx prettier:*)",
       "Bash(npx eslint:*)",
+      // Reading/inspecting files
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(ls)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(which:*)",
+      // Common utilities
+      "Bash(echo:*)",
+      "Bash(grep:*)",
+      "Bash(node:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
     ];
 
     // Add extra commands
