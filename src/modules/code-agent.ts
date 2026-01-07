@@ -2279,16 +2279,14 @@ export class CodeAgentModule extends DarwinModule {
     const settingsPath = join(claudeDir, "settings.local.json");
 
     // Base permissions for autonomous operation
+    // Note: Use ":*" for prefix matching in Claude Code settings
     const basePermissions = [
       // Beads commands
-      "Bash(bd show:*)",
-      "Bash(bd ready:*)",
-      "Bash(bd update:*)",
-      "Bash(bd close:*)",
-      "Bash(bd create:*)",
-      "Bash(bd list:*)",
+      "Bash(bd:*)",
       // Git commands
       "Bash(git status)",
+      "Bash(git status:*)",
+      "Bash(git diff)",
       "Bash(git diff:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
@@ -2298,11 +2296,17 @@ export class CodeAgentModule extends DarwinModule {
       "Bash(git branch:*)",
       "Bash(git log:*)",
       "Bash(git fetch:*)",
+      "Bash(git stash:*)",
+      "Bash(git reset:*)",
+      "Bash(git clean:*)",
       // npm commands
-      "Bash(npm run *)",
+      "Bash(npm run:*)",
       "Bash(npm test)",
+      "Bash(npm test:*)",
       "Bash(npm install)",
+      "Bash(npm install:*)",
       // Common tools
+      "Bash(npx tsc)",
       "Bash(npx tsc:*)",
       "Bash(npx vitest:*)",
       "Bash(npx jest:*)",
