@@ -13,6 +13,7 @@ export interface RepoConfig {
   name?: string; // Display name, defaults to directory name
   enabled: boolean;
   testCommand?: string; // Override default test command
+  typecheckCommand?: string; // Override default typecheck command
 }
 
 export interface ConsciousnessUserConfig {
@@ -55,10 +56,22 @@ export interface CodeAgentUserConfig {
   };
 }
 
+export interface GitSyncUserConfig {
+  /** Enable automatic git pull for repos (default: false) */
+  enabled?: boolean;
+  /** Interval between git pulls in ms (default: 300000 = 5 minutes) */
+  intervalMs?: number;
+  /** Only sync repos that have prd.json (default: true) */
+  prdReposOnly?: boolean;
+  /** Auto-stash local changes before pull (default: false) */
+  autoStash?: boolean;
+}
+
 export interface DarwinUserConfig {
   repos: RepoConfig[];
   defaults: {
     testCommand: string;
+    typecheckCommand: string;
     checkIntervalMs: number;
     maxSessionMinutes: number;
     usageThreshold: number;
@@ -73,12 +86,15 @@ export interface DarwinUserConfig {
   webSearch?: WebSearchUserConfig;
   /** Code agent configuration */
   codeAgent?: CodeAgentUserConfig;
+  /** Git sync configuration */
+  gitSync?: GitSyncUserConfig;
 }
 
 const DEFAULT_USER_CONFIG: DarwinUserConfig = {
   repos: [],
   defaults: {
     testCommand: 'npm test',
+    typecheckCommand: 'npm run build',
     checkIntervalMs: 5 * 60 * 1000, // 5 minutes
     maxSessionMinutes: 30,
     usageThreshold: 80,
@@ -144,6 +160,7 @@ export async function createTemplateConfig(): Promise<void> {
     ],
     defaults: {
       testCommand: 'npm test',
+      typecheckCommand: 'npm run build',
       checkIntervalMs: 300000,
       maxSessionMinutes: 30,
       usageThreshold: 80,
@@ -172,6 +189,12 @@ export async function createTemplateConfig(): Promise<void> {
         codex: { command: 'codex' },
       },
     },
+    gitSync: {
+      enabled: false,
+      intervalMs: 300000, // 5 minutes
+      prdReposOnly: true,
+      autoStash: false,
+    },
   };
 
   const content = JSON.stringify(template, null, 2);
@@ -191,6 +214,7 @@ function normalizeRepoConfig(repo: Partial<RepoConfig>, index: number): RepoConf
     name: repo.name || basename(repo.path),
     enabled: repo.enabled !== false,
     testCommand: repo.testCommand,
+    typecheckCommand: repo.typecheckCommand,
   };
 }
 
@@ -216,6 +240,7 @@ function validateConfig(config: unknown): DarwinUserConfig {
   if (cfg.defaults && typeof cfg.defaults === 'object') {
     const d = cfg.defaults as Record<string, unknown>;
     if (typeof d.testCommand === 'string') defaults.testCommand = d.testCommand;
+    if (typeof d.typecheckCommand === 'string') defaults.typecheckCommand = d.typecheckCommand;
     if (typeof d.checkIntervalMs === 'number') defaults.checkIntervalMs = d.checkIntervalMs;
     if (typeof d.maxSessionMinutes === 'number') defaults.maxSessionMinutes = d.maxSessionMinutes;
     if (typeof d.usageThreshold === 'number') defaults.usageThreshold = d.usageThreshold;
@@ -294,7 +319,19 @@ function validateConfig(config: unknown): DarwinUserConfig {
     };
   }
 
-  return { repos, defaults, brain, consciousness, openrouter, webSearch, codeAgent };
+  // Validate gitSync config
+  let gitSync: GitSyncUserConfig | undefined;
+  if (cfg.gitSync && typeof cfg.gitSync === 'object') {
+    const g = cfg.gitSync as Record<string, unknown>;
+    gitSync = {
+      enabled: typeof g.enabled === 'boolean' ? g.enabled : undefined,
+      intervalMs: typeof g.intervalMs === 'number' ? g.intervalMs : undefined,
+      prdReposOnly: typeof g.prdReposOnly === 'boolean' ? g.prdReposOnly : undefined,
+      autoStash: typeof g.autoStash === 'boolean' ? g.autoStash : undefined,
+    };
+  }
+
+  return { repos, defaults, brain, consciousness, openrouter, webSearch, codeAgent, gitSync };
 }
 
 /**

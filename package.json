@@ -7,6 +7,8 @@
   "scripts": {
     "build": "tsc",
     "start": "tsx src/cli/start.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:brain": "tsx src/cli/test-brain.ts",
     "test:health": "tsx src/cli/health-check.ts",
     "test:terminal": "tsx src/cli/test-terminal.ts",
@@ -20,7 +22,8 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.16"
   },
   "engines": {
     "node": ">=20.0.0"

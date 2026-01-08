@@ -10,16 +10,22 @@
  * Powered by a configurable model via Ollama or OpenRouter
  */
 
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { access } from 'fs/promises';
+import { join } from 'path';
 import { DarwinBrain, BrainConfig } from './brain.js';
 import { ModuleLoader, DarwinModule, ModuleConfig } from './module.js';
 import { EventBus, eventBus, DarwinEvent } from './event-bus.js';
 import { Logger, setLogLevel, LogLevel } from './logger.js';
-import { DarwinUserConfig } from './config.js';
+import { DarwinUserConfig, RepoConfig, GitSyncUserConfig } from './config.js';
 import { Monologue, getMonologue } from './monologue.js';
 import { Consciousness, ConsciousnessConfig } from './consciousness.js';
 import { SubAgentManager } from './sub-agents.js';
 import { OpenRouterClient } from '../integrations/openrouter.js';
 import { WebSearch } from '../integrations/web-search.js';
+
+const execAsync = promisify(exec);
 
 export interface DarwinConfig {
   brain: Partial<BrainConfig>;
@@ -29,7 +35,30 @@ export interface DarwinConfig {
   userConfig?: DarwinUserConfig; // User config from ~/.darwin/config.json
   consciousness: Partial<ConsciousnessConfig>;
   consciousnessEnabled: boolean; // Enable proactive consciousness loop
+  gitSync: Partial<GitSyncConfig>; // Git sync configuration
 }
+
+interface GitSyncConfig {
+  enabled: boolean;
+  intervalMs: number;
+  prdReposOnly: boolean;
+  autoStash: boolean;
+}
+
+interface GitSyncResult {
+  repo: string;
+  success: boolean;
+  updated: boolean;
+  error?: string;
+  newCommits?: number;
+}
+
+const DEFAULT_GIT_SYNC_CONFIG: GitSyncConfig = {
+  enabled: false,
+  intervalMs: 5 * 60 * 1000, // 5 minutes
+  prdReposOnly: true,
+  autoStash: false,
+};
 
 const DEFAULT_CONFIG: DarwinConfig = {
   brain: {},
@@ -38,6 +67,7 @@ const DEFAULT_CONFIG: DarwinConfig = {
   observeEvents: true,
   consciousness: {},
   consciousnessEnabled: true,
+  gitSync: {},
 };
 
 export class Darwin {
@@ -53,6 +83,8 @@ export class Darwin {
   private webSearch: WebSearch;
   private isRunning = false;
   private isPausedState = false;
+  private gitSyncConfig: GitSyncConfig;
+  private gitSyncInterval: NodeJS.Timeout | null = null;
 
   constructor(config: Partial<DarwinConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -105,6 +137,19 @@ export class Darwin {
         ...this.config.userConfig?.consciousness,
       }
     );
+
+    // Initialize git sync config from user config
+    const userGitSync = this.config.userConfig?.gitSync;
+    this.gitSyncConfig = {
+      ...DEFAULT_GIT_SYNC_CONFIG,
+      ...this.config.gitSync,
+      ...(userGitSync && {
+        enabled: userGitSync.enabled ?? DEFAULT_GIT_SYNC_CONFIG.enabled,
+        intervalMs: userGitSync.intervalMs ?? DEFAULT_GIT_SYNC_CONFIG.intervalMs,
+        prdReposOnly: userGitSync.prdReposOnly ?? DEFAULT_GIT_SYNC_CONFIG.prdReposOnly,
+        autoStash: userGitSync.autoStash ?? DEFAULT_GIT_SYNC_CONFIG.autoStash,
+      }),
+    };
 
     // Register consciousness action handlers
     this.setupConsciousnessActions();
@@ -317,6 +362,11 @@ export class Darwin {
       this.consciousness.start();
     }
 
+    // Start git sync loop if enabled
+    if (this.gitSyncConfig.enabled) {
+      this.startGitSyncLoop();
+    }
+
     // Emit startup event
     this.eventBus.publish('darwin', 'started', {
       modules: moduleNames,
@@ -330,6 +380,9 @@ export class Darwin {
     this.logger.info('Stopping Darwin...');
     this.monologue.act('Shutting down...');
     this.isRunning = false;
+
+    // Stop git sync loop
+    this.stopGitSyncLoop();
 
     // Stop consciousness first
     this.consciousness.stop();
@@ -514,6 +567,177 @@ export class Darwin {
    */
   hasOpenRouter(): boolean {
     return this.openRouter !== null;
+  }
+
+  // ============================================================
+  // Git Sync Methods
+  // ============================================================
+
+  /**
+   * Start the git sync loop
+   */
+  private startGitSyncLoop(): void {
+    if (this.gitSyncInterval) {
+      return; // Already running
+    }
+
+    this.logger.info(`Starting git sync loop (interval: ${this.gitSyncConfig.intervalMs}ms)`);
+    this.monologue.observe('Git sync enabled');
+
+    // Run immediately on start
+    this.runGitSync().catch((err) => {
+      this.logger.error('Initial git sync failed:', err);
+    });
+
+    // Then run on interval
+    this.gitSyncInterval = setInterval(() => {
+      this.runGitSync().catch((err) => {
+        this.logger.error('Git sync failed:', err);
+      });
+    }, this.gitSyncConfig.intervalMs);
+  }
+
+  /**
+   * Stop the git sync loop
+   */
+  private stopGitSyncLoop(): void {
+    if (this.gitSyncInterval) {
+      clearInterval(this.gitSyncInterval);
+      this.gitSyncInterval = null;
+      this.logger.info('Git sync loop stopped');
+    }
+  }
+
+  /**
+   * Run git sync for all configured repos
+   */
+  private async runGitSync(): Promise<GitSyncResult[]> {
+    const repos = this.config.userConfig?.repos || [];
+    const enabledRepos = repos.filter((r) => r.enabled);
+
+    if (enabledRepos.length === 0) {
+      return [];
+    }
+
+    this.logger.debug(`Running git sync for ${enabledRepos.length} repo(s)...`);
+    const results: GitSyncResult[] = [];
+
+    for (const repo of enabledRepos) {
+      const result = await this.syncRepo(repo);
+      results.push(result);
+
+      if (result.updated) {
+        this.monologue.observe(`Git: ${repo.name || repo.path} updated (+${result.newCommits} commits)`);
+        this.eventBus.publish('darwin', 'git_sync', {
+          repo: repo.name || repo.path,
+          newCommits: result.newCommits,
+        });
+      }
+    }
+
+    const updated = results.filter((r) => r.updated).length;
+    if (updated > 0) {
+      this.logger.info(`Git sync: ${updated}/${results.length} repos updated`);
+    }
+
+    return results;
+  }
+
+  /**
+   * Sync a single repo (git pull)
+   */
+  private async syncRepo(repo: RepoConfig): Promise<GitSyncResult> {
+    const repoName = repo.name || repo.path;
+
+    // Check if prdReposOnly is set and verify prd.json exists
+    if (this.gitSyncConfig.prdReposOnly) {
+      const prdPath = join(repo.path, 'prd.json');
+      try {
+        await access(prdPath);
+      } catch {
+        // No prd.json, skip this repo
+        return { repo: repoName, success: true, updated: false };
+      }
+    }
+
+    try {
+      // Get current HEAD before pull
+      const { stdout: beforeSha } = await execAsync('git rev-parse HEAD', { cwd: repo.path });
+      const before = beforeSha.trim();
+
+      // Optionally stash local changes
+      let stashed = false;
+      if (this.gitSyncConfig.autoStash) {
+        const { stdout: status } = await execAsync('git status --porcelain', { cwd: repo.path });
+        if (status.trim()) {
+          await execAsync('git stash push -m "darwin-auto-stash"', { cwd: repo.path });
+          stashed = true;
+        }
+      }
+
+      // Get current branch
+      const { stdout: branchOut } = await execAsync('git branch --show-current', { cwd: repo.path });
+      const branch = branchOut.trim();
+
+      if (!branch) {
+        // Detached HEAD, skip
+        return { repo: repoName, success: true, updated: false };
+      }
+
+      // Check if we have a remote tracking branch
+      try {
+        await execAsync(`git rev-parse --abbrev-ref ${branch}@{upstream}`, { cwd: repo.path });
+      } catch {
+        // No upstream, skip
+        return { repo: repoName, success: true, updated: false };
+      }
+
+      // Pull with rebase
+      await execAsync(`git pull --rebase origin ${branch}`, { cwd: repo.path });
+
+      // Restore stash if we stashed
+      if (stashed) {
+        await execAsync('git stash pop', { cwd: repo.path });
+      }
+
+      // Get new HEAD after pull
+      const { stdout: afterSha } = await execAsync('git rev-parse HEAD', { cwd: repo.path });
+      const after = afterSha.trim();
+
+      if (before === after) {
+        return { repo: repoName, success: true, updated: false };
+      }
+
+      // Count new commits
+      const { stdout: logOut } = await execAsync(`git rev-list ${before}..${after} --count`, {
+        cwd: repo.path,
+      });
+      const newCommits = parseInt(logOut.trim(), 10) || 0;
+
+      return { repo: repoName, success: true, updated: true, newCommits };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Git sync failed for ${repoName}: ${message}`);
+      return { repo: repoName, success: false, updated: false, error: message };
+    }
+  }
+
+  /**
+   * Manually trigger git sync (for CLI/tools)
+   */
+  async triggerGitSync(): Promise<GitSyncResult[]> {
+    return this.runGitSync();
+  }
+
+  /**
+   * Get git sync status
+   */
+  getGitSyncStatus(): { enabled: boolean; intervalMs: number; running: boolean } {
+    return {
+      enabled: this.gitSyncConfig.enabled,
+      intervalMs: this.gitSyncConfig.intervalMs,
+      running: this.gitSyncInterval !== null,
+    };
   }
 }
 

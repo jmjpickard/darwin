@@ -80,6 +80,7 @@ Config file (${getConfigPath()}):
     ],
     "defaults": {
       "testCommand": "npm test",
+      "typecheckCommand": "npm run build",
       "checkIntervalMs": 300000,
       "maxSessionMinutes": 30,
       "usageThreshold": 80

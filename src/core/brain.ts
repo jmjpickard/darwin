@@ -151,7 +151,7 @@ export class DarwinBrain extends EventEmitter {
     return `You are Darwin, a friendly local home intelligence assistant running on Jack's Raspberry Pi.
 
 You help with:
-- Managing code tasks (Beads task management) across configured repositories
+- Managing code tasks (prd.json task management) across configured repositories
 - Home automation (lights, heating, sensors)
 - Monitoring and orchestrating Claude Code sessions
 

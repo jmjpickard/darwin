@@ -1,0 +1,21 @@
+darwin-m7b progress:
+- Added StatusManager to write ~/.darwin/status.json.
+- Updated CodeAgent to write status on start, stop, and task transitions.
+
+darwin-m06 progress:
+- Added validation loop to run typecheck/tests on completion and send feedback on failure.
+- Added typecheckCommand config default and prompt instructions.
+
+darwin-6x4 progress:
+- Replaced the BeadTask interface with a PrdTask-based type and normalized beads data into PRD-compatible fields.
+- Added shared PRD status mapping for unified task status conversion.
+
+darwin-nmb progress:
+- Removed Beads task fetching from ready/list flows and added PRD feature fetching as the source for task aggregation.
+- Updated ready/list task comments to reflect PRD-only fetching.
+
+darwin-24z progress:
+- Updated code-agent tool registrations and descriptions to reflect PRD tasks and clarify legacy Beads tools.
+
+darwin-2ys progress:
+- Ensure PRD features flip to in_progress when tasks complete or move in_progress, keeping feature/task status flow in sync.

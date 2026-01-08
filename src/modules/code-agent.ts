@@ -1,20 +1,27 @@
 /**
- * Code Agent Module - Orchestrates Claude Code with Beads task management
+ * Code Agent Module - Orchestrates Claude Code with PRD and Beads task management
+ *
+ * Supports two task sources:
+ * - prd.json: Feature-based task management with hierarchical features/tasks
+ * - Beads: CLI-based task management (bd command)
+ *
+ * PRD tasks drive scheduling/queueing; Beads support remains for legacy use.
+ * Task completion is detected via the Darwin completion signal: <darwin:task-complete />
  *
  * Uses PTY-based TerminalController for true interactive Claude Code sessions.
  * Brain handles question answering when Claude asks for input.
  *
  * Registers tools:
- * - code_get_ready_tasks: Get tasks ready to work on across all repos
- * - code_list_tasks: List/search tasks across repos (optionally include closed)
+ * - code_get_ready_tasks: Get tasks ready to work on across all repos (PRD)
+ * - code_list_tasks: List/search PRD tasks across repos (optionally include closed)
  * - code_show_task: Show details for a task
  * - code_get_task_state: Get repo/branch state for a task (detect existing work)
  * - code_start_task: Start Claude working on a task
  * - code_get_status: Get current agent status
  * - code_stop_task: Stop current task
- * - code_add_task: Create a new Beads task
- * - code_update_task: Update task status and/or notes
- * - code_close_task: Close a task with a reason
+ * - code_add_task: Create a new legacy Beads task
+ * - code_update_task: Update legacy Beads task status and/or notes
+ * - code_close_task: Close a legacy Beads task with a reason
  * - code_list_repos: List configured repositories
  */
 
@@ -32,6 +39,16 @@ import {
   TerminalObservation,
   TerminalState,
 } from "../core/terminal-types.js";
+import { PrdManager } from "../core/prd-manager.js";
+import { StatusManager } from "../core/status-manager.js";
+import {
+  PrdFeature,
+  PrdTask,
+  PrdStatus,
+  DarwinStatus,
+  ValidationResult,
+  COMPLETION_SIGNAL,
+} from "../core/prd-types.js";
 
 const execAsync = promisify(exec);
 
@@ -46,6 +63,7 @@ interface CodeAgentConfig extends ModuleConfig {
   repos: RepoConfig[];
   defaults: {
     testCommand: string;
+    typecheckCommand: string;
     checkIntervalMs: number;
     maxSessionMinutes: number;
     usageThreshold: number;
@@ -55,11 +73,7 @@ interface CodeAgentConfig extends ModuleConfig {
   agentCommands: Record<CodeAgentBackend, AgentCommand>;
 }
 
-interface BeadTask {
-  id: string;
-  title: string;
-  description?: string;
-  status: string;
+type BeadTask = PrdTask & {
   priority: number;
   type: string;
   issue_type?: string;
@@ -67,10 +81,41 @@ interface BeadTask {
   updated_at?: string;
   closed_at?: string;
   close_reason?: string;
+};
+
+/**
+ * Unified task type that represents either a Beads task or a PRD task
+ * This allows the code agent to work with both systems seamlessly
+ */
+type TaskSource = "beads" | "prd";
+
+interface UnifiedTask {
+  /** Task ID (e.g., "bd-abc123" for Beads, "task-01-001" for PRD) */
+  id: string;
+  /** Parent feature ID (only for PRD tasks) */
+  featureId?: string;
+  /** Task title */
+  title: string;
+  /** Task description */
+  description?: string;
+  /** Task status (normalized) */
+  status: string;
+  /** Priority (1 = highest) */
+  priority: number;
+  /** Task type (task, bug, feature) */
+  type: string;
+  /** Source system */
+  source: TaskSource;
+  /** Original BeadTask if from Beads */
+  beadTask?: BeadTask;
+  /** Original PrdTask if from PRD */
+  prdTask?: PrdTask;
+  /** Parent PrdFeature if from PRD */
+  prdFeature?: PrdFeature;
 }
 
 interface QueuedTask {
-  task: BeadTask;
+  task: UnifiedTask;
   repo: RepoConfig;
 }
 
@@ -108,8 +153,12 @@ interface ClaudeSession {
   startedAt: Date;
   outputBuffer: string[];
   branchName: string;
-  task: BeadTask;
+  task: UnifiedTask;
   agent: CodeAgentBackend;
+  /** PrdManager instance if working with prd.json */
+  prdManager?: PrdManager;
+  validationResult?: ValidationResult;
+  validationInProgress?: boolean;
 }
 
 type OutputHandler = (line: string) => void;
@@ -120,6 +169,7 @@ const DEFAULT_CONFIG: CodeAgentConfig = {
   repos: [],
   defaults: {
     testCommand: "npm test",
+    typecheckCommand: "npm run build",
     checkIntervalMs: 5 * 60 * 1000,
     maxSessionMinutes: 30,
     usageThreshold: 80,
@@ -132,9 +182,68 @@ const DEFAULT_CONFIG: CodeAgentConfig = {
   },
 };
 
+function prdStatusToUnified(status: PrdStatus): string {
+  const statusMap: Record<PrdStatus, string> = {
+    pending: "open",
+    in_progress: "in_progress",
+    completed: "closed",
+    failed: "blocked",
+  };
+  return statusMap[status];
+}
+
+/**
+ * Convert a BeadTask to UnifiedTask
+ */
+function beadToUnified(bead: BeadTask): UnifiedTask {
+  return {
+    id: bead.id,
+    title: bead.title,
+    description: bead.description,
+    status: prdStatusToUnified(bead.status),
+    priority: bead.priority,
+    type: bead.type,
+    source: "beads",
+    beadTask: bead,
+  };
+}
+
+/**
+ * Convert a PrdTask (with its parent feature) to UnifiedTask
+ */
+function prdToUnified(task: PrdTask, feature: PrdFeature): UnifiedTask {
+  return {
+    id: task.id,
+    featureId: feature.id,
+    title: task.title,
+    description: task.description,
+    status: prdStatusToUnified(task.status),
+    priority: feature.priority,
+    type: "task",
+    source: "prd",
+    prdTask: task,
+    prdFeature: feature,
+  };
+}
+
+/**
+ * Map unified status back to PRD status
+ */
+function unifiedToPrdStatus(status: string): PrdStatus {
+  const reverseMap: Record<string, PrdStatus> = {
+    open: "pending",
+    ready: "pending",
+    in_progress: "in_progress",
+    closed: "completed",
+    blocked: "failed",
+    failed: "failed",
+  };
+  return reverseMap[status.toLowerCase()] || "pending";
+}
+
 export class CodeAgentModule extends DarwinModule {
   readonly name = "CodeAgent";
-  readonly description = "Orchestrates Claude Code with Beads task management";
+  readonly description = "Orchestrates Claude Code with PRD and Beads task management";
 
   protected override config: CodeAgentConfig;
   private currentSession: ClaudeSession | null = null;
@@ -148,10 +257,12 @@ export class CodeAgentModule extends DarwinModule {
   private sessionEndReason: SessionEndReason | null = null;
   private limitRecoveryAttempts = 0;
   private lastOutputAt: Date | null = null;
+  private statusManager: StatusManager;
 
   constructor(brain: DarwinBrain, config: ModuleConfig) {
     super(brain, config);
     this.config = { ...DEFAULT_CONFIG, ...config } as CodeAgentConfig;
+    this.statusManager = new StatusManager();
   }
 
   async init(): Promise<void> {
@@ -170,6 +281,8 @@ export class CodeAgentModule extends DarwinModule {
     if (this.config.autoStart && this.config.repos.length > 0) {
       this.startCheckLoop();
     }
+
+    await this.updateDarwinStatus({ status: "idle" });
 
     eventBus.publish("code", "module_started", {
       repos: this.config.repos.map((r) => r.name),
@@ -192,6 +305,8 @@ export class CodeAgentModule extends DarwinModule {
     if (this.currentSession) {
       await this.stopCurrentSession("Module stopping", "stopped");
     }
+
+    await this.updateDarwinStatus({ status: "idle" });
 
     eventBus.publish("code", "module_stopped", {});
   }
@@ -288,7 +403,7 @@ export class CodeAgentModule extends DarwinModule {
     // Get ready tasks from all repos
     this.registerTool(
       "code_get_ready_tasks",
-      "Get list of tasks ready to work on from all configured repos",
+      "Get list of PRD tasks ready to work on from all configured repos",
       {
         type: "object",
         properties: {
@@ -309,7 +424,7 @@ export class CodeAgentModule extends DarwinModule {
     // List/search tasks from all repos (includes closed if requested)
     this.registerTool(
       "code_list_tasks",
-      "List or search Beads tasks across repos (optionally include closed)",
+      "List or search PRD tasks across repos (optionally include closed)",
       {
         type: "object",
         properties: {
@@ -348,13 +463,14 @@ export class CodeAgentModule extends DarwinModule {
     // Show task details
     this.registerTool(
       "code_show_task",
-      "Show details for a Beads task",
+      "Show details for a PRD task",
       {
         type: "object",
         properties: {
           taskId: {
             type: "string",
-            description: "The Beads task ID (e.g., bd-a1b2)",
+            description:
+              "The PRD task ID (e.g., task-01-001). Legacy Beads IDs (bd-*) also supported.",
           },
           repo: {
             type: "string",
@@ -373,13 +489,14 @@ export class CodeAgentModule extends DarwinModule {
     // Get task repo state
     this.registerTool(
       "code_get_task_state",
-      "Get repo/branch state for a Beads task (detect existing work)",
+      "Get repo/branch state for a PRD task (detect existing work)",
       {
         type: "object",
         properties: {
           taskId: {
             type: "string",
-            description: "The Beads task ID (e.g., bd-a1b2)",
+            description:
+              "The PRD task ID (e.g., task-01-001). Legacy Beads IDs (bd-*) also supported.",
           },
           repo: {
             type: "string",
@@ -398,13 +515,14 @@ export class CodeAgentModule extends DarwinModule {
     // Start working on a task
     this.registerTool(
       "code_start_task",
-      "Start Claude Code working on a specific Beads task",
+      "Start Claude Code working on a specific PRD task",
       {
         type: "object",
         properties: {
           taskId: {
             type: "string",
-            description: "The Beads task ID (e.g., bd-a1b2)",
+            description:
+              "The PRD task ID (e.g., task-01-001). Legacy Beads IDs (bd-*) also supported.",
           },
           repo: {
             type: "string",
@@ -505,7 +623,7 @@ export class CodeAgentModule extends DarwinModule {
     // Add a task to a repo
     this.registerTool(
       "code_add_task",
-      "Create a new Beads task in a repository",
+      "Create a new legacy Beads task in a repository",
       {
         type: "object",
         properties: {
@@ -537,7 +655,7 @@ export class CodeAgentModule extends DarwinModule {
     // Update task status/notes
     this.registerTool(
       "code_update_task",
-      'Update a Beads task status and/or notes (use status "open" to reopen)',
+      'Update a legacy Beads task status and/or notes (use status "open" to reopen)',
       {
         type: "object",
         properties: {
@@ -570,7 +688,7 @@ export class CodeAgentModule extends DarwinModule {
     // Close a task
     this.registerTool(
       "code_close_task",
-      "Close a Beads task with a reason",
+      "Close a legacy Beads task with a reason",
       {
         type: "object",
         properties: {
@@ -699,13 +817,14 @@ export class CodeAgentModule extends DarwinModule {
 
   /**
    * Get ready tasks from all repos, sorted by priority
+   * Fetches from prd.json features
    */
   private async getReadyTasks(
     limit: number,
     repoFilter?: string
   ): Promise<QueuedTask[]> {
     const allTasks: QueuedTask[] = [];
-    const readyStatuses = new Set(["open", "ready"]);
+    const readyStatuses = new Set(["open", "ready", "in_progress"]);
 
     const repos = repoFilter
       ? this.config.repos.filter((r) => r.name === repoFilter)
@@ -715,7 +834,8 @@ export class CodeAgentModule extends DarwinModule {
       if (!repo.enabled) continue;
 
       try {
-        const tasks = await this.fetchBeadsTasks(repo, "ready");
+        // Fetch from PRD source
+        const tasks = await this.fetchAllTasks(repo, "ready");
         const filtered = tasks.filter((task) =>
           readyStatuses.has(task.status.toLowerCase())
         );
@@ -726,6 +846,7 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     // Sort by priority (lower number = higher priority)
+    // PRD tasks naturally come first since they're added first to the array
     allTasks.sort((a, b) => a.task.priority - b.task.priority);
 
     return allTasks.slice(0, limit);
@@ -733,6 +854,7 @@ export class CodeAgentModule extends DarwinModule {
 
   /**
    * List tasks across repos with optional filters
+   * Fetches from prd.json features
    */
   private async listTasks(options: TaskQuery): Promise<QueuedTask[]> {
     const allTasks: QueuedTask[] = [];
@@ -748,7 +870,8 @@ export class CodeAgentModule extends DarwinModule {
       if (!repo.enabled) continue;
 
       try {
-        const tasks = await this.fetchBeadsTasks(repo, "list");
+        // Fetch from PRD source
+        const tasks = await this.fetchAllTasks(repo, "list");
 
         for (const task of tasks) {
           const taskStatus = task.status.toLowerCase();
@@ -784,9 +907,14 @@ export class CodeAgentModule extends DarwinModule {
       if (a.task.priority !== b.task.priority) {
         return a.task.priority - b.task.priority;
       }
-      const aUpdated = a.task.updated_at ? Date.parse(a.task.updated_at) : 0;
-      const bUpdated = b.task.updated_at ? Date.parse(b.task.updated_at) : 0;
-      return bUpdated - aUpdated;
+      // For PRD tasks, use the feature's updated_at; for Beads use task updated_at
+      const getUpdated = (t: UnifiedTask): number => {
+        if (t.source === "prd" && t.prdFeature) {
+          return Date.parse(t.prdFeature.updated_at);
+        }
+        return t.beadTask?.updated_at ? Date.parse(t.beadTask.updated_at) : 0;
+      };
+      return getUpdated(b.task) - getUpdated(a.task);
     });
 
     return allTasks.slice(0, options.limit);
@@ -798,7 +926,7 @@ export class CodeAgentModule extends DarwinModule {
   private async showTask(
     taskId: string,
     repoName?: string
-  ): Promise<{ success: boolean; task?: BeadTask; message: string }> {
+  ): Promise<{ success: boolean; task?: UnifiedTask; message: string }> {
     const repo = await this.findRepo(taskId, repoName);
     if (!repo) {
       return {
@@ -819,7 +947,7 @@ export class CodeAgentModule extends DarwinModule {
       return {
         success: true,
         task,
-        message: `Found ${task.id} in ${repo.name}`,
+        message: `Found ${task.id} (${task.source}) in ${repo.name}`,
       };
     } catch (error) {
       return {
@@ -953,37 +1081,115 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   /**
-   * Fetch tasks from Beads with timeout and file fallback
+   * Fetch features from prd.json
    */
-  private async fetchBeadsTasks(
+  private async fetchPrdFeatures(
     repo: RepoConfig,
     mode: "ready" | "list"
-  ): Promise<BeadTask[]> {
-    const command = mode === "ready" ? "ready --json" : "list --json";
+  ): Promise<PrdFeature[]> {
+    const prdManager = new PrdManager(repo.path);
+
+    if (!(await prdManager.exists())) {
+      return [];
+    }
+
     try {
-      const { stdout } = await this.execBeads(repo, command, {
-        timeoutMs: 10_000,
-        maxBuffer: 5 * 1024 * 1024,
-      });
-      const result = JSON.parse(stdout);
-      const rawTasks = (
-        Array.isArray(result) ? result : result.issues || []
-      ) as Array<Record<string, unknown>>;
-      return rawTasks
-        .map((raw) => this.normalizeTask(raw))
-        .filter((task): task is BeadTask => !!task);
+      await prdManager.load();
+      const features = prdManager.getFeatures();
+      const filtered =
+        mode === "ready"
+          ? features.filter(
+              (feature) =>
+                feature.status === "pending" || feature.status === "in_progress"
+            )
+          : features;
+
+      this.logger.debug(`Found ${filtered.length} PRD features in ${repo.name}`);
+      return filtered;
     } catch (error) {
-      this.logger.warn(
-        `Beads ${mode} failed in ${repo.name}, reading issues.jsonl instead: ${error}`
-      );
-      return this.readTasksFromFile(repo);
+      this.logger.warn(`Failed to load prd.json in ${repo.name}: ${error}`);
+      return [];
     }
   }
 
   /**
+   * Fetch tasks from PRD features
+   */
+  private async fetchAllTasks(
+    repo: RepoConfig,
+    mode: "ready" | "list"
+  ): Promise<UnifiedTask[]> {
+    const features = await this.fetchPrdFeatures(repo, mode);
+    const tasks: UnifiedTask[] = [];
+
+    for (const feature of features) {
+      for (const task of feature.tasks) {
+        if (mode === "ready") {
+          if (task.status !== "pending" && task.status !== "in_progress") {
+            continue;
+          }
+        }
+
+        tasks.push(prdToUnified(task, feature));
+      }
+    }
+
+    this.logger.debug(`Found ${tasks.length} PRD tasks in ${repo.name}`);
+    return tasks;
+  }
+
+  /**
    * Load a task by id with file fallback
+   * Supports both Beads (bd-*) and PRD (task-*) task IDs
    */
   private async loadTaskById(
+    repo: RepoConfig,
+    taskId: string
+  ): Promise<UnifiedTask | null> {
+    // Check if this is a PRD task ID (task-XX-XXX format)
+    if (taskId.startsWith("task-")) {
+      return this.loadPrdTaskById(repo, taskId);
+    }
+
+    // Otherwise, load from Beads
+    const beadTask = await this.loadBeadTaskById(repo, taskId);
+    return beadTask ? beadToUnified(beadTask) : null;
+  }
+
+  /**
+   * Load a PRD task by ID
+   */
+  private async loadPrdTaskById(
+    repo: RepoConfig,
+    taskId: string
+  ): Promise<UnifiedTask | null> {
+    const prdManager = new PrdManager(repo.path);
+
+    if (!(await prdManager.exists())) {
+      return null;
+    }
+
+    try {
+      await prdManager.load();
+
+      for (const feature of prdManager.getFeatures()) {
+        const task = feature.tasks.find((t) => t.id === taskId);
+        if (task) {
+          return prdToUnified(task, feature);
+        }
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.warn(`Failed to load PRD task ${taskId}: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Load a Beads task by id with file fallback
+   */
+  private async loadBeadTaskById(
     repo: RepoConfig,
     taskId: string
   ): Promise<BeadTask | null> {
@@ -1048,9 +1254,10 @@ export class CodeAgentModule extends DarwinModule {
     return {
       id,
       title,
-      description:
-        typeof raw.description === "string" ? raw.description : undefined,
-      status,
+      description: typeof raw.description === "string" ? raw.description : "",
+      status: unifiedToPrdStatus(status),
+      passes: null,
+      commit_sha: null,
       priority: typeof priority === "number" ? priority : 0,
       type: typeof type === "string" ? type : "task",
       issue_type:
@@ -1199,8 +1406,9 @@ export class CodeAgentModule extends DarwinModule {
     const branchName = await this.createBranch(repo, taskId, task.title);
     state = await this.getTaskRepoState(repo, task);
 
-    // Update Beads status
-    await this.updateTaskStatus(repo, taskId, "in_progress");
+    // Update task status (handles both PRD and Beads)
+    await this.updateTaskStatus(repo, taskId, "in_progress", task.featureId);
+    await this.updateDarwinStatus({ status: "working", task, repo });
 
     // Create TerminalController for PTY-based interaction
     const terminal = new TerminalController({
@@ -1488,7 +1696,7 @@ export class CodeAgentModule extends DarwinModule {
    */
   private setupTerminalHandlers(
     terminal: TerminalController,
-    task: BeadTask,
+    task: UnifiedTask,
     repo: RepoConfig
   ): void {
     // Handle all output
@@ -1605,9 +1813,10 @@ export class CodeAgentModule extends DarwinModule {
 
   /**
    * Check if the task is completed by examining recent output
+   * Detects completion signal (<darwin:task-complete />) in output
    */
   private async checkTaskCompletion(
-    task: BeadTask,
+    task: UnifiedTask,
     repo: RepoConfig
   ): Promise<void> {
     if (!this.currentSession) return;
@@ -1615,7 +1824,14 @@ export class CodeAgentModule extends DarwinModule {
     const observation = this.currentSession.terminal.getObservation();
     const recentOutput = observation.recentOutput;
 
-    // Look for completion indicators
+    // Check for explicit Darwin completion signal first
+    if (recentOutput.includes(COMPLETION_SIGNAL)) {
+      this.logger.info("Completion signal detected, marking task complete...");
+      await this.validateTaskCompletion(task, repo, "signal");
+      return;
+    }
+
+    // Fall back to heuristic completion indicators
     const completionIndicators = [
       /completed.*task/i,
       /finished.*implementation/i,
@@ -1629,13 +1845,269 @@ export class CodeAgentModule extends DarwinModule {
     );
 
     if (isComplete) {
-      this.logger.info("Task appears complete, initiating wrap-up...");
+      this.logger.info("Task appears complete, initiating validation...");
+      await this.validateTaskCompletion(task, repo, "heuristic");
+    }
+  }
 
-      // Send exit command to Claude
+  private async validateTaskCompletion(
+    task: UnifiedTask,
+    repo: RepoConfig,
+    reason: "signal" | "heuristic"
+  ): Promise<void> {
+    if (!this.currentSession) return;
+    if (this.currentSession.validationInProgress) {
+      this.logger.debug("Validation already in progress, skipping.");
+      return;
+    }
+
+    this.currentSession.validationInProgress = true;
+    let validation: ValidationResult | null = null;
+
+    try {
+      this.logger.info(
+        `Running validation (${reason}) for ${task.id} in ${repo.name}...`
+      );
+      validation = await this.runValidation(repo);
+    } finally {
+      if (this.currentSession) {
+        this.currentSession.validationInProgress = false;
+      }
+    }
+
+    if (!validation) {
+      return;
+    }
+
+    if (this.currentSession) {
+      this.currentSession.validationResult = validation;
+    }
+
+    if (validation.passed) {
+      eventBus.publish("code", "validation_passed", {
+        taskId: task.id,
+        featureId: task.featureId,
+        repo: repo.name,
+        source: task.source,
+      });
+      await this.handleTaskCompletion(task, repo);
+      return;
+    }
+
+    eventBus.publish("code", "validation_failed", {
+      taskId: task.id,
+      featureId: task.featureId,
+      repo: repo.name,
+      source: task.source,
+      typecheckPassed: validation.typecheckPassed,
+      testsPassed: validation.testsPassed,
+    });
+
+    await this.sendValidationFeedback(task, repo, validation);
+  }
+
+  private async sendValidationFeedback(
+    task: UnifiedTask,
+    repo: RepoConfig,
+    validation: ValidationResult
+  ): Promise<void> {
+    if (!this.currentSession) return;
+
+    const typecheckCommand = this.getTypecheckCommand(repo);
+    const testCommand = this.getTestCommand(repo);
+    const message = this.formatValidationMessage(
+      validation,
+      typecheckCommand,
+      testCommand
+    );
+
+    this.logger.warn(
+      `Validation failed for ${task.id} (${repo.name}), sending feedback`
+    );
+
+    await this.currentSession.terminal.executeAction({
+      type: "paste_submit",
+      content: message,
+      reason: "Validation failed",
+    });
+  }
+
+  private formatValidationMessage(
+    validation: ValidationResult,
+    typecheckCommand: string,
+    testCommand: string
+  ): string {
+    const sections: string[] = [
+      "Validation failed after completion.",
+      `Typecheck (${typecheckCommand}): ${
+        validation.typecheckPassed ? "passed" : "failed"
+      }`,
+    ];
+
+    if (!validation.typecheckPassed && validation.typecheckError) {
+      sections.push(
+        `Typecheck output (truncated):\n${this.truncateOutput(
+          validation.typecheckError
+        )}`
+      );
+    }
+
+    sections.push(
+      `Tests (${testCommand}): ${validation.testsPassed ? "passed" : "failed"}`
+    );
+
+    if (!validation.testsPassed && validation.testsError) {
+      sections.push(
+        `Tests output (truncated):\n${this.truncateOutput(
+          validation.testsError
+        )}`
+      );
+    }
+
+    sections.push(
+      `Please fix the issues, re-run ${typecheckCommand} and ${testCommand}, then output ${COMPLETION_SIGNAL}.`
+    );
+
+    return sections.join("\n\n");
+  }
+
+  /**
+   * Handle task completion: update PRD/Beads status, mark as complete
+   */
+  private async handleTaskCompletion(
+    task: UnifiedTask,
+    repo: RepoConfig
+  ): Promise<void> {
+    this.logger.info(`Task ${task.id} completed`);
+
+    if (task.source === "prd" && task.featureId) {
+      // Update PRD task status
+      await this.completePrdTask(repo, task);
+    } else if (task.source === "beads") {
+      // Update Beads task status (existing flow)
+      await this.updateTaskStatus(repo, task.id, "closed");
+    }
+
+    // Send exit command to Claude
+    if (this.currentSession) {
       await this.currentSession.terminal.executeAction({
         type: "send",
         content: "/exit",
       });
+    }
+
+    eventBus.publish("code", "task_completed", {
+      taskId: task.id,
+      featureId: task.featureId,
+      repo: repo.name,
+      source: task.source,
+    });
+  }
+
+  /**
+   * Complete a PRD task and check if feature is done
+   */
+  private async completePrdTask(
+    repo: RepoConfig,
+    task: UnifiedTask
+  ): Promise<void> {
+    if (!task.featureId || !task.prdTask) return;
+
+    const prdManager = new PrdManager(repo.path);
+    await prdManager.load();
+
+    // Get the current commit SHA
+    const commitSha = await this.getCurrentCommitSha(repo);
+
+    // Mark task as completed
+    prdManager.markTaskCompleted(task.featureId, task.id, commitSha, true);
+
+    // Check if feature is now complete
+    if (prdManager.isFeatureComplete(task.featureId)) {
+      const allPass = prdManager.doAllTasksPass(task.featureId);
+      prdManager.updateFeatureStatus(task.featureId, "completed");
+      prdManager.markFeaturePasses(task.featureId, allPass);
+      this.logger.info(`Feature ${task.featureId} completed (passes: ${allPass})`);
+
+      eventBus.publish("code", "feature_completed", {
+        featureId: task.featureId,
+        repo: repo.name,
+        passes: allPass,
+      });
+    } else {
+      const feature = prdManager.getFeature(task.featureId);
+      if (feature && feature.status === "pending") {
+        prdManager.updateFeatureStatus(task.featureId, "in_progress");
+      }
+    }
+
+    await prdManager.save();
+  }
+
+  /**
+   * Get the current commit SHA
+   */
+  private async getCurrentCommitSha(repo: RepoConfig): Promise<string> {
+    try {
+      const { stdout } = await execAsync("git rev-parse HEAD", { cwd: repo.path });
+      return stdout.trim();
+    } catch {
+      return "unknown";
+    }
+  }
+
+  private async updateDarwinStatus(args: {
+    status: DarwinStatus["status"];
+    task?: UnifiedTask;
+    repo?: RepoConfig;
+    lastError?: string;
+    clearTask?: boolean;
+  }): Promise<void> {
+    const clearTask = args.clearTask ?? args.status === "idle";
+    let currentFeature: string | null = null;
+    let currentTask: string | null = null;
+    let progress = "0/0 tasks";
+
+    if (!clearTask && args.task) {
+      currentTask = args.task.id;
+      if (args.task.source === "prd" && args.task.featureId) {
+        currentFeature = args.task.featureId;
+        if (args.repo) {
+          try {
+            const prdManager = new PrdManager(args.repo.path);
+            await prdManager.load();
+            progress = prdManager.getFeatureProgress(args.task.featureId);
+          } catch (error) {
+            this.logger.warn(`Failed to load PRD progress for status: ${error}`);
+            progress = "unknown";
+          }
+        } else if (args.task.prdFeature) {
+          const total = args.task.prdFeature.tasks.length;
+          const completed = args.task.prdFeature.tasks.filter(
+            (t) => t.status === "completed"
+          ).length;
+          progress = `${completed}/${total} tasks`;
+        } else {
+          progress = "unknown";
+        }
+      } else {
+        progress = "1/1 tasks";
+      }
+    }
+
+    const status: DarwinStatus = {
+      current_feature: currentFeature,
+      current_task: currentTask,
+      progress,
+      status: args.status,
+      updated_at: new Date().toISOString(),
+      ...(args.lastError ? { last_error: args.lastError } : {}),
+    };
+
+    try {
+      await this.statusManager.writeStatus(status);
+    } catch (error) {
+      this.logger.warn(`Failed to write status: ${error}`);
     }
   }
 
@@ -1644,7 +2116,7 @@ export class CodeAgentModule extends DarwinModule {
    */
   private async handleQuestion(
     question: string,
-    task: BeadTask,
+    task: UnifiedTask,
     observation: TerminalObservation
   ): Promise<TerminalAction | TerminalAction[]> {
     // Safety checks first
@@ -1831,7 +2303,7 @@ export class CodeAgentModule extends DarwinModule {
 
   private async chooseMenuOptionIndex(
     question: string,
-    task: BeadTask,
+    task: UnifiedTask,
     options: string[]
   ): Promise<number> {
     const normalized = options.map((opt) => opt.toLowerCase());
@@ -1911,7 +2383,7 @@ export class CodeAgentModule extends DarwinModule {
    * Handle limit reached - pause and schedule retry
    */
   private async handleLimitReached(
-    task: BeadTask,
+    task: UnifiedTask,
     repo: RepoConfig,
     resetTime?: Date
   ): Promise<void> {
@@ -1962,20 +2434,19 @@ export class CodeAgentModule extends DarwinModule {
    * Handle successful task completion
    */
   private async handleTaskSuccess(
-    task: BeadTask,
+    task: UnifiedTask,
     repo: RepoConfig
   ): Promise<void> {
     this.logger.info(`Task ${task.id} completed (${repo.name})`);
 
-    // Run tests
-    const testCommand = repo.testCommand || this.config.defaults.testCommand;
-    const testResult = await this.runTests(repo, testCommand);
+    const existingValidation = this.currentSession?.validationResult;
+    const validation = existingValidation ?? (await this.runValidation(repo));
 
-    if (!testResult.passed) {
+    if (!validation.passed) {
       await this.handleTaskFailure(
         task,
         repo,
-        `Tests failed: ${testResult.output.slice(0, 200)}`
+        this.formatValidationSummary(validation)
       );
       return;
     }
@@ -1992,23 +2463,37 @@ export class CodeAgentModule extends DarwinModule {
     // Create PR
     const prUrl = await this.createPR(repo, task);
 
-    // Close Beads task
-    await this.execBeads(repo, `close ${task.id} --reason "PR: ${prUrl}"`, {
-      timeoutMs: 10_000,
-    });
+    // Close task based on source
+    if (task.source === "prd" && task.featureId) {
+      await this.completePrdTask(repo, task);
+      // Set PR URL on feature
+      const prdManager = new PrdManager(repo.path);
+      await prdManager.load();
+      prdManager.setFeaturePr(task.featureId, prUrl);
+      await prdManager.save();
+    } else {
+      // Close Beads task
+      await this.execBeads(repo, `close ${task.id} --reason "PR: ${prUrl}"`, {
+        timeoutMs: 10_000,
+      });
+    }
 
     eventBus.publish("code", "task_completed", {
       taskId: task.id,
+      featureId: task.featureId,
       repo: repo.name,
       prUrl,
+      source: task.source,
     });
+
+    await this.updateDarwinStatus({ status: "idle" });
   }
 
   /**
    * Handle task failure
    */
   private async handleTaskFailure(
-    task: BeadTask,
+    task: UnifiedTask,
     repo: RepoConfig,
     error: string
   ): Promise<void> {
@@ -2019,19 +2504,36 @@ export class CodeAgentModule extends DarwinModule {
       cwd: repo.path,
     }).catch(() => {});
 
-    // Update Beads
-    await this.execBeads(
-      repo,
-      `update ${task.id} --status blocked --notes "${error
-        .replace(/"/g, '\\"')
-        .slice(0, 200)}"`,
-      { timeoutMs: 10_000 }
-    ).catch(() => {});
+    // Update task status based on source
+    if (task.source === "prd" && task.featureId) {
+      const prdManager = new PrdManager(repo.path);
+      await prdManager.load();
+      prdManager.markTaskFailed(task.featureId, task.id, false);
+      await prdManager.save();
+    } else {
+      // Update Beads
+      await this.execBeads(
+        repo,
+        `update ${task.id} --status blocked --notes "${error
+          .replace(/"/g, '\\"')
+          .slice(0, 200)}"`,
+        { timeoutMs: 10_000 }
+      ).catch(() => {});
+    }
 
     eventBus.publish("code", "task_failed", {
       taskId: task.id,
+      featureId: task.featureId,
       repo: repo.name,
       error,
+      source: task.source,
+    });
+
+    await this.updateDarwinStatus({
+      status: "error",
+      task,
+      repo,
+      lastError: error,
     });
   }
 
@@ -2046,7 +2548,7 @@ export class CodeAgentModule extends DarwinModule {
       return { success: false };
     }
 
-    const { terminal, taskId, repo } = this.currentSession;
+    const { terminal, taskId, repo, task } = this.currentSession;
 
     this.logger.info(`Stopping session: ${reason || "user request"}`);
     if (!this.sessionEndReason) {
@@ -2069,6 +2571,23 @@ export class CodeAgentModule extends DarwinModule {
       repo: repo.name,
       reason,
     });
+
+    const status =
+      endReason === "limit"
+        ? "waiting"
+        : endReason === "timeout" || endReason === "start_error"
+          ? "error"
+          : "idle";
+    const lastError =
+      status === "error" ? reason || `Session ended (${endReason})` : undefined;
+    await this.updateDarwinStatus({
+      status,
+      task,
+      repo,
+      lastError,
+      clearTask: status === "idle",
+    });
+
     return { success: true };
   }
 
@@ -2600,7 +3119,7 @@ export class CodeAgentModule extends DarwinModule {
   }
 
   private shouldRequireResumeDecision(
-    task: BeadTask,
+    task: UnifiedTask,
     state: TaskRepoState
   ): boolean {
     const status = task.status.toLowerCase();
@@ -2612,7 +3131,7 @@ export class CodeAgentModule extends DarwinModule {
 
   private async getTaskRepoState(
     repo: RepoConfig,
-    task: BeadTask
+    task: UnifiedTask
   ): Promise<TaskRepoState> {
     const baseRef = await this.getDefaultBranchRef(repo);
     const currentBranch = await this.getCurrentBranchLabel(repo);
@@ -2645,7 +3164,7 @@ export class CodeAgentModule extends DarwinModule {
 
   private async resolveTaskBranch(
     repo: RepoConfig,
-    task: BeadTask
+    task: UnifiedTask
   ): Promise<{ branch?: string; candidates: string[] }> {
     const expected = this.buildBranchName(task.id, task.title);
     const branches = await this.listTaskBranches(repo, task.id);
@@ -2806,7 +3325,7 @@ export class CodeAgentModule extends DarwinModule {
 
   private async resetTaskBranch(
     repo: RepoConfig,
-    task: BeadTask,
+    task: UnifiedTask,
     state: TaskRepoState
   ): Promise<void> {
     const branch =
@@ -2869,12 +3388,33 @@ export class CodeAgentModule extends DarwinModule {
     return stdout.trim();
   }
 
+  /**
+   * Update task status - handles both PRD and Beads tasks
+   */
   private async updateTaskStatus(
     repo: RepoConfig,
     taskId: string,
-    status: string
+    status: string,
+    featureId?: string
   ): Promise<void> {
     try {
+      // Check if this is a PRD task
+      if (taskId.startsWith("task-") && featureId) {
+        const prdManager = new PrdManager(repo.path);
+        if (await prdManager.exists()) {
+          await prdManager.load();
+          const prdStatus = unifiedToPrdStatus(status);
+          prdManager.updateTaskStatus(featureId, taskId, prdStatus);
+          const feature = prdManager.getFeature(featureId);
+          if (feature && prdStatus === "in_progress" && feature.status === "pending") {
+            prdManager.updateFeatureStatus(featureId, "in_progress");
+          }
+          await prdManager.save();
+          return;
+        }
+      }
+
+      // Fall back to Beads
       await this.execBeads(repo, `update ${taskId} --status ${status}`, {
         timeoutMs: 10_000,
       });
@@ -2883,14 +3423,23 @@ export class CodeAgentModule extends DarwinModule {
     }
   }
 
-  private async runTests(
+  private getTestCommand(repo: RepoConfig): string {
+    return repo.testCommand || this.config.defaults.testCommand;
+  }
+
+  private getTypecheckCommand(repo: RepoConfig): string {
+    return repo.typecheckCommand || this.config.defaults.typecheckCommand;
+  }
+
+  private async runCommand(
     repo: RepoConfig,
-    testCommand: string
+    command: string
   ): Promise<{ passed: boolean; output: string }> {
     try {
-      const { stdout, stderr } = await execAsync(testCommand, {
+      const { stdout, stderr } = await execAsync(command, {
         cwd: repo.path,
         timeout: 5 * 60 * 1000,
+        maxBuffer: 5 * 1024 * 1024,
       });
       return { passed: true, output: stdout + stderr };
     } catch (error) {
@@ -2899,9 +3448,49 @@ export class CodeAgentModule extends DarwinModule {
     }
   }
 
+  private async runValidation(repo: RepoConfig): Promise<ValidationResult> {
+    const typecheckCommand = this.getTypecheckCommand(repo);
+    const testCommand = this.getTestCommand(repo);
+    const sameCommand =
+      typecheckCommand.trim().toLowerCase() ===
+      testCommand.trim().toLowerCase();
+
+    const typecheckResult = await this.runCommand(repo, typecheckCommand);
+    const testResult = sameCommand
+      ? typecheckResult
+      : await this.runCommand(repo, testCommand);
+
+    return {
+      typecheckPassed: typecheckResult.passed,
+      typecheckError: typecheckResult.passed ? undefined : typecheckResult.output,
+      testsPassed: testResult.passed,
+      testsError: testResult.passed ? undefined : testResult.output,
+      passed: typecheckResult.passed && testResult.passed,
+    };
+  }
+
+  private formatValidationSummary(validation: ValidationResult): string {
+    const parts: string[] = [];
+    if (!validation.typecheckPassed) parts.push("typecheck failed");
+    if (!validation.testsPassed) parts.push("tests failed");
+    if (parts.length === 0) return "Validation failed";
+    return `Validation failed: ${parts.join(", ")}`;
+  }
+
+  private truncateOutput(output: string, limit = 1200): string {
+    const stripped = output
+      .replace(/\x1b\[[0-9;]*m/g, "")
+      .replace(/\r/g, "")
+      .trim();
+    if (stripped.length <= limit) {
+      return stripped;
+    }
+    return `${stripped.slice(0, limit).trimEnd()}\n...truncated`;
+  }
+
   private async generatePrompt(
     repo: RepoConfig,
-    task: BeadTask,
+    task: UnifiedTask,
     branchName: string
   ): Promise<string> {
     // Use Brain's reasoner for better prompts
@@ -2918,13 +3507,22 @@ Be specific about files to check and approach to take. Under 50 words:
       )
       .catch(() => "Focus on the task, make minimal changes, run tests.");
 
-    const testCommand = repo.testCommand || this.config.defaults.testCommand;
+    const testCommand = this.getTestCommand(repo);
+    const typecheckCommand = this.getTypecheckCommand(repo);
+    const sameCommand =
+      typecheckCommand.trim().toLowerCase() ===
+      testCommand.trim().toLowerCase();
+
+    // Include feature context for PRD tasks
+    const featureContext = task.source === "prd" && task.prdFeature
+      ? `\n## Feature: ${task.prdFeature.title}\n${task.prdFeature.description}\n`
+      : "";
 
     return `
 # Task: ${task.id} - ${task.title}
 
 ## Type: ${task.type}
-
+${featureContext}
 ## Repo
 Path: ${repo.path}
 Branch: ${branchName}
@@ -2936,12 +3534,25 @@ ${task.description || "See title."}
 ${guidance}
 
 ## Instructions
-1. Focus ONLY on this task
-2. Make minimal, targeted changes
-3. Write/update tests
-4. Run: ${testCommand}
-5. Summarise what you changed
-6. When asking for confirmation, prefer [y/n] or numbered options
+${(() => {
+  const steps: string[] = [];
+  const add = (text: string) => steps.push(`${steps.length + 1}. ${text}`);
+
+  add("Focus ONLY on this task");
+  add("Make minimal, targeted changes");
+  add("Write/update tests");
+  if (sameCommand) {
+    add(`Run: ${testCommand}`);
+  } else {
+    add(`Run: ${typecheckCommand}`);
+    add(`Run: ${testCommand}`);
+  }
+  add("Summarise what you changed");
+  add("When asking for confirmation, prefer [y/n] or numbered options");
+  add(`When task is complete, output: ${COMPLETION_SIGNAL}`);
+
+  return steps.join("\n");
+})()}
 
 Begin.
 `.trim();
@@ -2949,9 +3560,10 @@ Begin.
 
   /**
    * Generate a concise CLI prompt for inline mode (-p flag)
+   * Includes completion signal instruction for Darwin to detect task completion
    */
   private generateInlinePrompt(
-    task: BeadTask,
+    task: UnifiedTask,
     isResume: boolean
   ): string {
     const action = isResume ? "continue implementing" : "implement";
@@ -2959,15 +3571,20 @@ Begin.
       ? " It has already been marked as in progress so just needs implementing."
       : "";
 
-    return `${action} beads task ${task.id}.${statusNote} When finished please commit and push to branch.`;
+    // Use appropriate task description based on source
+    const taskRef = task.source === "prd"
+      ? `PRD task ${task.id} (feature: ${task.featureId})`
+      : `beads task ${task.id}`;
+
+    return `${action} ${taskRef}.${statusNote} When finished please commit and push to branch. Signal completion with: ${COMPLETION_SIGNAL}`;
   }
 
-  private async generateCommitMessage(task: BeadTask): Promise<string> {
+  private async generateCommitMessage(task: UnifiedTask): Promise<string> {
     const type = task.type === "bug" ? "fix" : "feat";
     return `${type}(${task.id}): ${task.title.toLowerCase().slice(0, 50)}`;
   }
 
-  private async createPR(repo: RepoConfig, task: BeadTask): Promise<string> {
+  private async createPR(repo: RepoConfig, task: UnifiedTask): Promise<string> {
     const branch = await this.getCurrentBranch(repo);
     const description = await this.brain
       .reason(
