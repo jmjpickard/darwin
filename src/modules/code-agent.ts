@@ -155,10 +155,22 @@ interface ClaudeSession {
   branchName: string;
   task: UnifiedTask;
   agent: CodeAgentBackend;
-  /** PrdManager instance if working with prd.json */
   prdManager?: PrdManager;
   validationResult?: ValidationResult;
   validationInProgress?: boolean;
+}
+
+interface TaskPlanningContext {
+  repoName: string;
+  repoPath: string;
+  tasks: Array<{
+    id: string;
+    featureId?: string;
+    title: string;
+    description?: string;
+    priority: number;
+    status: string;
+  }>;
 }
 
 type OutputHandler = (line: string) => void;
@@ -257,6 +269,7 @@ export class CodeAgentModule extends DarwinModule {
   private limitResumeTask: { taskId: string; repoName?: string } | null = null;
   private sessionEndReason: SessionEndReason | null = null;
   private limitRecoveryAttempts = 0;
+  private consecutiveLimitHits = 0;
   private lastOutputAt: Date | null = null;
   private statusManager: StatusManager;
 
@@ -780,6 +793,7 @@ export class CodeAgentModule extends DarwinModule {
 
   /**
    * Check capacity and start a task if available
+   * Uses the brain to thoughtfully prioritise tasks
    */
   private async checkAndExecute(): Promise<void> {
     if (this.pauseCheckFn?.()) {
@@ -814,17 +828,138 @@ export class CodeAgentModule extends DarwinModule {
       return;
     }
 
-    const tasks = await this.getReadyTasks(1);
-    if (tasks.length === 0) {
+    const allTasks = await this.getReadyTasks(50);
+    if (allTasks.length === 0) {
       this.logger.info("No ready tasks found in prd.json");
       return;
     }
 
-    const { task, repo } = tasks[0];
+    const selectedTask = await this.selectNextTask(allTasks);
+    if (!selectedTask) {
+      this.logger.info("Brain could not select a task to work on");
+      return;
+    }
+
+    const { task, repo } = selectedTask;
     this.logger.info(
       `Starting task: ${task.id} "${task.title}" in ${repo.name}`
     );
     await this.startTask(task.id, repo.name, "continue");
+  }
+
+  /**
+   * Use the brain to thoughtfully select the next task to work on
+   * Groups tasks by repo and asks the brain to prioritise
+   */
+  private async selectNextTask(
+    tasks: QueuedTask[]
+  ): Promise<QueuedTask | null> {
+    if (tasks.length === 0) return null;
+    if (tasks.length === 1) return tasks[0];
+
+    const repoGroups = new Map<string, TaskPlanningContext>();
+    for (const { task, repo } of tasks) {
+      const repoName = repo.name || repo.path;
+      if (!repoGroups.has(repoName)) {
+        repoGroups.set(repoName, {
+          repoName,
+          repoPath: repo.path,
+          tasks: [],
+        });
+      }
+      repoGroups.get(repoName)!.tasks.push({
+        id: task.id,
+        featureId: task.featureId,
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        status: task.status,
+      });
+    }
+
+    const prompt = this.buildTaskPlanningPrompt(
+      Array.from(repoGroups.values())
+    );
+
+    try {
+      const response = await this.brain.chat(prompt);
+      const selectedId = this.parseTaskSelection(response.message);
+
+      if (selectedId) {
+        const found = tasks.find((t) => t.task.id === selectedId);
+        if (found) {
+          this.logger.info(
+            `Brain selected task: ${selectedId} - ${response.message.slice(
+              0,
+              100
+            )}`
+          );
+          return found;
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`Brain task selection failed: ${error}`);
+    }
+
+    return tasks[0];
+  }
+
+  /**
+   * Build a prompt for the brain to select the next task
+   */
+  private buildTaskPlanningPrompt(repos: TaskPlanningContext[]): string {
+    const sections: string[] = [
+      "I need to decide which task to work on next. Here are the available tasks:\n",
+    ];
+
+    for (const repo of repos) {
+      sections.push(`## Repository: ${repo.repoName}`);
+      sections.push(`Path: ${repo.repoPath}\n`);
+
+      for (const task of repo.tasks) {
+        const featureInfo = task.featureId
+          ? ` (feature: ${task.featureId})`
+          : "";
+        sections.push(`- **${task.id}**${featureInfo}: ${task.title}`);
+        sections.push(`  Priority: ${task.priority}, Status: ${task.status}`);
+        if (task.description) {
+          sections.push(`  ${task.description.slice(0, 200)}`);
+        }
+      }
+      sections.push("");
+    }
+
+    sections.push(`Consider:
+1. Task priority (lower number = higher priority)
+2. Logical order - some tasks may depend on others
+3. In-progress tasks should usually be continued
+4. Tasks within the same feature should be completed together
+
+Respond with the task ID you recommend starting, and briefly explain why.
+Format: "Selected: <task-id> - <reason>"`);
+
+    return sections.join("\n");
+  }
+
+  /**
+   * Parse the brain's response to extract the selected task ID
+   */
+  private parseTaskSelection(response: string): string | null {
+    const patterns = [
+      /Selected:\s*(\S+)/i,
+      /recommend(?:ing)?\s+(\S+)/i,
+      /start(?:ing)?\s+with\s+(\S+)/i,
+      /^(\S+-\S+)/m,
+    ];
+
+    for (const pattern of patterns) {
+      const match = response.match(pattern);
+      if (match) {
+        return match[1].replace(/[.,;:'"]+$/, "");
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -1785,7 +1920,6 @@ export class CodeAgentModule extends DarwinModule {
       void this.handleLimitReached(task, repo, resetTime);
     });
 
-    // Handle process exit
     terminal.on("exit", async (code, signal) => {
       this.logger.info(`Claude exited: code=${code}, signal=${signal}`);
 
@@ -1803,12 +1937,20 @@ export class CodeAgentModule extends DarwinModule {
         return;
       }
 
-      // Determine if this was success or failure
       if (code === 0) {
         await this.handleTaskSuccess(task, repo);
       } else if (signal) {
-        // Killed by signal - likely intentional stop
         this.logger.info(`Session ended by signal: ${signal}`);
+      } else if (code === 1) {
+        const likelyRateLimit = await this.detectRateLimitExit(task, repo);
+        if (likelyRateLimit) {
+          this.logger.warn(
+            `Exit code 1 detected as likely rate limit for ${task.id}`
+          );
+          await this.handleLimitReached(task, repo, undefined);
+        } else {
+          await this.handleTaskFailure(task, repo, `Exit code: ${code}`);
+        }
       } else {
         await this.handleTaskFailure(task, repo, `Exit code: ${code}`);
       }
@@ -2460,6 +2602,7 @@ export class CodeAgentModule extends DarwinModule {
     repo: RepoConfig
   ): Promise<void> {
     this.logger.info(`Task ${task.id} completed (${repo.name})`);
+    this.consecutiveLimitHits = 0;
 
     const existingValidation = this.currentSession?.validationResult;
     const validation = existingValidation ?? (await this.runValidation(repo));
@@ -3042,6 +3185,55 @@ export class CodeAgentModule extends DarwinModule {
     return beadTasks.some((task) => task.id === taskId);
   }
 
+  /**
+   * Detect if an exit code 1 was likely due to rate limiting
+   * Checks session duration and recent output for indicators
+   */
+  private async detectRateLimitExit(
+    task: UnifiedTask,
+    repo: RepoConfig
+  ): Promise<boolean> {
+    if (!this.currentSession) return false;
+
+    const sessionDuration =
+      Date.now() - this.currentSession.startedAt.getTime();
+    const recentOutput = this.currentSession.outputBuffer.slice(-50).join("\n");
+    const lower = recentOutput.toLowerCase();
+
+    const rateLimitIndicators = [
+      "usage limit",
+      "rate limit",
+      "quota",
+      "limit reached",
+      "limit exceeded",
+      "try again later",
+      "too many requests",
+      "resets at",
+    ];
+
+    const hasLimitIndicator = rateLimitIndicators.some((indicator) =>
+      lower.includes(indicator)
+    );
+
+    if (hasLimitIndicator) {
+      this.logger.debug(`Rate limit detected via output for ${task.id}`);
+      return true;
+    }
+
+    const veryQuickExit = sessionDuration < 30_000;
+    if (veryQuickExit && this.currentSession.outputBuffer.length < 20) {
+      this.logger.debug(
+        `Quick exit (${sessionDuration}ms) with minimal output - likely rate limit`
+      );
+      const capacity = await this.checkAgentCapacity(this.config.agent);
+      if (!capacity.available || capacity.utilization > 80) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private async tryRecoverFromLimit(
     terminal: TerminalController,
     agent: CodeAgentBackend = "claude"
@@ -3099,8 +3291,17 @@ export class CodeAgentModule extends DarwinModule {
     source: "cli" | "api"
   ): void {
     const now = Date.now();
+    this.consecutiveLimitHits += 1;
+
+    const baseWaitMs = 60 * 60 * 1000;
+    const backoffMultiplier = Math.min(
+      Math.pow(1.5, this.consecutiveLimitHits - 1),
+      4
+    );
+    const backoffWaitMs = Math.floor(baseWaitMs * backoffMultiplier);
+
     const resetMs = resetTime?.getTime();
-    const fallback = now + 60 * 60 * 1000;
+    const fallback = now + backoffWaitMs;
     const target = Number.isFinite(resetMs) ? resetMs! : fallback;
     const untilMs = Math.max(target, now + 10_000);
     const nextMs = this.limitUntil
@@ -3112,8 +3313,9 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     this.limitUntil = new Date(nextMs);
+    const waitMins = Math.round((nextMs - now) / 60_000);
     this.logger.warn(
-      `Claude usage limit active until ${this.limitUntil.toISOString()} (${source})`
+      `Claude usage limit active for ${waitMins}min (hit #${this.consecutiveLimitHits}, ${source})`
     );
 
     if (this.limitTimer) {
