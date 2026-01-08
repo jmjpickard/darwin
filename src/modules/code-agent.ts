@@ -1140,18 +1140,17 @@ export class CodeAgentModule extends DarwinModule {
 
   /**
    * Load a task by id with file fallback
-   * Supports both Beads (bd-*) and PRD (task-*) task IDs
+   * Tries PRD first (if prd.json exists), then falls back to Beads
    */
   private async loadTaskById(
     repo: RepoConfig,
     taskId: string
   ): Promise<UnifiedTask | null> {
-    // Check if this is a PRD task ID (task-XX-XXX format)
-    if (taskId.startsWith("task-")) {
-      return this.loadPrdTaskById(repo, taskId);
+    const prdTask = await this.loadPrdTaskById(repo, taskId);
+    if (prdTask) {
+      return prdTask;
     }
 
-    // Otherwise, load from Beads
     const beadTask = await this.loadBeadTaskById(repo, taskId);
     return beadTask ? beadToUnified(beadTask) : null;
   }
@@ -2993,12 +2992,29 @@ export class CodeAgentModule extends DarwinModule {
     }
   }
 
+  /**
+   * Check if a task exists in a repo (checks both PRD and Beads)
+   */
   private async taskExistsInRepo(
     repo: RepoConfig,
     taskId: string
   ): Promise<boolean> {
-    const tasks = await this.readTasksFromFile(repo);
-    return tasks.some((task) => task.id === taskId);
+    const prdManager = new PrdManager(repo.path);
+    if (await prdManager.exists()) {
+      try {
+        await prdManager.load();
+        for (const feature of prdManager.getFeatures()) {
+          if (feature.tasks.some((t) => t.id === taskId)) {
+            return true;
+          }
+        }
+      } catch {
+        this.logger.debug(`Failed to check PRD for task ${taskId} in ${repo.name}`);
+      }
+    }
+
+    const beadTasks = await this.readTasksFromFile(repo);
+    return beadTasks.some((task) => task.id === taskId);
   }
 
   private async tryRecoverFromLimit(

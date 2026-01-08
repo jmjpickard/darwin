@@ -616,30 +616,44 @@ export class Darwin {
     const enabledRepos = repos.filter((r) => r.enabled);
 
     if (enabledRepos.length === 0) {
+      this.logger.debug('Git sync: No enabled repos found');
       return [];
     }
 
-    this.logger.debug(`Running git sync for ${enabledRepos.length} repo(s)...`);
+    const repoNames = enabledRepos.map((r) => r.name || r.path).join(', ');
+    this.monologue.act(`Git sync: Pulling ${enabledRepos.length} repo(s) [${repoNames}]`);
+    this.logger.info(`Git sync: Checking ${enabledRepos.length} repo(s)...`);
     const results: GitSyncResult[] = [];
 
     for (const repo of enabledRepos) {
       const result = await this.syncRepo(repo);
       results.push(result);
 
-      if (result.updated) {
+      if (result.error) {
+        this.monologue.alert(`Git sync failed: ${result.repo} - ${result.error}`);
+        this.logger.warn(`Git sync: ${result.repo} failed - ${result.error}`);
+      } else if (result.updated) {
         this.monologue.observe(`Git: ${repo.name || repo.path} updated (+${result.newCommits} commits)`);
         this.eventBus.publish('darwin', 'git_sync', {
           repo: repo.name || repo.path,
           newCommits: result.newCommits,
         });
+      } else {
+        this.logger.debug(`Git sync: ${result.repo} - no changes`);
       }
     }
 
     const updated = results.filter((r) => r.updated).length;
-    if (updated > 0) {
-      this.logger.info(`Git sync: ${updated}/${results.length} repos updated`);
+    const failed = results.filter((r) => !r.success).length;
+    const unchanged = results.length - updated - failed;
+
+    if (updated > 0 || failed > 0) {
+      this.monologue.status(`Git sync: ${updated} updated, ${failed} failed, ${unchanged} unchanged`);
+    } else {
+      this.monologue.observe(`Git sync: All ${results.length} repo(s) up to date`);
     }
 
+    this.logger.info(`Git sync complete: ${updated} updated, ${failed} failed, ${unchanged} unchanged`);
     return results;
   }
 
@@ -649,23 +663,20 @@ export class Darwin {
   private async syncRepo(repo: RepoConfig): Promise<GitSyncResult> {
     const repoName = repo.name || repo.path;
 
-    // Check if prdReposOnly is set and verify prd.json exists
     if (this.gitSyncConfig.prdReposOnly) {
       const prdPath = join(repo.path, 'prd.json');
       try {
         await access(prdPath);
       } catch {
-        // No prd.json, skip this repo
+        this.logger.debug(`Git sync: Skipping ${repoName} (no prd.json, prdReposOnly=true)`);
         return { repo: repoName, success: true, updated: false };
       }
     }
 
     try {
-      // Get current HEAD before pull
       const { stdout: beforeSha } = await execAsync('git rev-parse HEAD', { cwd: repo.path });
       const before = beforeSha.trim();
 
-      // Optionally stash local changes
       let stashed = false;
       if (this.gitSyncConfig.autoStash) {
         const { stdout: status } = await execAsync('git status --porcelain', { cwd: repo.path });
@@ -675,20 +686,18 @@ export class Darwin {
         }
       }
 
-      // Get current branch
       const { stdout: branchOut } = await execAsync('git branch --show-current', { cwd: repo.path });
       const branch = branchOut.trim();
 
       if (!branch) {
-        // Detached HEAD, skip
+        this.logger.debug(`Git sync: Skipping ${repoName} (detached HEAD)`);
         return { repo: repoName, success: true, updated: false };
       }
 
-      // Check if we have a remote tracking branch
       try {
         await execAsync(`git rev-parse --abbrev-ref ${branch}@{upstream}`, { cwd: repo.path });
       } catch {
-        // No upstream, skip
+        this.logger.debug(`Git sync: Skipping ${repoName} (no upstream for ${branch})`);
         return { repo: repoName, success: true, updated: false };
       }
 
