@@ -243,7 +243,8 @@ function unifiedToPrdStatus(status: string): PrdStatus {
 
 export class CodeAgentModule extends DarwinModule {
   readonly name = "CodeAgent";
-  readonly description = "Orchestrates Claude Code with PRD and Beads task management";
+  readonly description =
+    "Orchestrates Claude Code with PRD and Beads task management";
 
   protected override config: CodeAgentConfig;
   private currentSession: ClaudeSession | null = null;
@@ -281,6 +282,13 @@ export class CodeAgentModule extends DarwinModule {
     if (this.config.autoStart && this.config.repos.length > 0) {
       this.startCheckLoop();
     }
+
+    eventBus.subscribe("darwin", "git_sync_complete", () => {
+      this.logger.info("Git sync complete, checking for tasks...");
+      void this.checkAndExecute().catch((error) => {
+        this.logger.error(`Task check after git sync failed: ${error}`);
+      });
+    });
 
     await this.updateDarwinStatus({ status: "idle" });
 
@@ -774,7 +782,6 @@ export class CodeAgentModule extends DarwinModule {
    * Check capacity and start a task if available
    */
   private async checkAndExecute(): Promise<void> {
-    // Check if paused
     if (this.pauseCheckFn?.()) {
       this.logger.debug("Darwin paused - skipping task check");
       return;
@@ -786,8 +793,8 @@ export class CodeAgentModule extends DarwinModule {
     }
 
     if (this.isLimitActive()) {
-      this.logger.debug(
-        `Claude limit active until ${this.limitUntil?.toISOString()}`
+      this.logger.info(
+        `Claude limit active until ${this.limitUntil?.toISOString()} - waiting`
       );
       return;
     }
@@ -801,17 +808,22 @@ export class CodeAgentModule extends DarwinModule {
           "api"
         );
       }
-      this.logger.debug(`Claude at ${capacity.utilization}% - waiting`);
+      this.logger.info(
+        `Claude at ${capacity.utilization}% - waiting for capacity`
+      );
       return;
     }
 
     const tasks = await this.getReadyTasks(1);
     if (tasks.length === 0) {
-      this.logger.debug("No ready tasks");
+      this.logger.info("No ready tasks found in prd.json");
       return;
     }
 
     const { task, repo } = tasks[0];
+    this.logger.info(
+      `Starting task: ${task.id} "${task.title}" in ${repo.name}`
+    );
     await this.startTask(task.id, repo.name, "continue");
   }
 
@@ -1104,7 +1116,9 @@ export class CodeAgentModule extends DarwinModule {
             )
           : features;
 
-      this.logger.debug(`Found ${filtered.length} PRD features in ${repo.name}`);
+      this.logger.debug(
+        `Found ${filtered.length} PRD features in ${repo.name}`
+      );
       return filtered;
     } catch (error) {
       this.logger.warn(`Failed to load prd.json in ${repo.name}: ${error}`);
@@ -1454,7 +1468,10 @@ export class CodeAgentModule extends DarwinModule {
         const inlinePrompt = this.generateInlinePrompt(task, isResume);
         agentArgs.push("--permission-mode", "acceptEdits", "-p", inlinePrompt);
         this.logger.info(
-          `Starting Claude with inline prompt: "${inlinePrompt.slice(0, 60)}..."`
+          `Starting Claude with inline prompt: "${inlinePrompt.slice(
+            0,
+            60
+          )}..."`
         );
       }
 
@@ -2026,7 +2043,9 @@ export class CodeAgentModule extends DarwinModule {
       const allPass = prdManager.doAllTasksPass(task.featureId);
       prdManager.updateFeatureStatus(task.featureId, "completed");
       prdManager.markFeaturePasses(task.featureId, allPass);
-      this.logger.info(`Feature ${task.featureId} completed (passes: ${allPass})`);
+      this.logger.info(
+        `Feature ${task.featureId} completed (passes: ${allPass})`
+      );
 
       eventBus.publish("code", "feature_completed", {
         featureId: task.featureId,
@@ -2048,7 +2067,9 @@ export class CodeAgentModule extends DarwinModule {
    */
   private async getCurrentCommitSha(repo: RepoConfig): Promise<string> {
     try {
-      const { stdout } = await execAsync("git rev-parse HEAD", { cwd: repo.path });
+      const { stdout } = await execAsync("git rev-parse HEAD", {
+        cwd: repo.path,
+      });
       return stdout.trim();
     } catch {
       return "unknown";
@@ -2077,7 +2098,9 @@ export class CodeAgentModule extends DarwinModule {
             await prdManager.load();
             progress = prdManager.getFeatureProgress(args.task.featureId);
           } catch (error) {
-            this.logger.warn(`Failed to load PRD progress for status: ${error}`);
+            this.logger.warn(
+              `Failed to load PRD progress for status: ${error}`
+            );
             progress = "unknown";
           }
         } else if (args.task.prdFeature) {
@@ -2575,8 +2598,8 @@ export class CodeAgentModule extends DarwinModule {
       endReason === "limit"
         ? "waiting"
         : endReason === "timeout" || endReason === "start_error"
-          ? "error"
-          : "idle";
+        ? "error"
+        : "idle";
     const lastError =
       status === "error" ? reason || `Session ended (${endReason})` : undefined;
     await this.updateDarwinStatus({
@@ -3009,7 +3032,9 @@ export class CodeAgentModule extends DarwinModule {
           }
         }
       } catch {
-        this.logger.debug(`Failed to check PRD for task ${taskId} in ${repo.name}`);
+        this.logger.debug(
+          `Failed to check PRD for task ${taskId} in ${repo.name}`
+        );
       }
     }
 
@@ -3422,7 +3447,11 @@ export class CodeAgentModule extends DarwinModule {
           const prdStatus = unifiedToPrdStatus(status);
           prdManager.updateTaskStatus(featureId, taskId, prdStatus);
           const feature = prdManager.getFeature(featureId);
-          if (feature && prdStatus === "in_progress" && feature.status === "pending") {
+          if (
+            feature &&
+            prdStatus === "in_progress" &&
+            feature.status === "pending"
+          ) {
             prdManager.updateFeatureStatus(featureId, "in_progress");
           }
           await prdManager.save();
@@ -3478,7 +3507,9 @@ export class CodeAgentModule extends DarwinModule {
 
     return {
       typecheckPassed: typecheckResult.passed,
-      typecheckError: typecheckResult.passed ? undefined : typecheckResult.output,
+      typecheckError: typecheckResult.passed
+        ? undefined
+        : typecheckResult.output,
       testsPassed: testResult.passed,
       testsError: testResult.passed ? undefined : testResult.output,
       passed: typecheckResult.passed && testResult.passed,
@@ -3530,9 +3561,10 @@ Be specific about files to check and approach to take. Under 50 words:
       testCommand.trim().toLowerCase();
 
     // Include feature context for PRD tasks
-    const featureContext = task.source === "prd" && task.prdFeature
-      ? `\n## Feature: ${task.prdFeature.title}\n${task.prdFeature.description}\n`
-      : "";
+    const featureContext =
+      task.source === "prd" && task.prdFeature
+        ? `\n## Feature: ${task.prdFeature.title}\n${task.prdFeature.description}\n`
+        : "";
 
     return `
 # Task: ${task.id} - ${task.title}
@@ -3578,19 +3610,18 @@ Begin.
    * Generate a concise CLI prompt for inline mode (-p flag)
    * Includes completion signal instruction for Darwin to detect task completion
    */
-  private generateInlinePrompt(
-    task: UnifiedTask,
-    isResume: boolean
-  ): string {
+  private generateInlinePrompt(task: UnifiedTask, isResume: boolean): string {
     const action = isResume ? "continue implementing" : "implement";
-    const statusNote = task.status.toLowerCase() === "in_progress"
-      ? " It has already been marked as in progress so just needs implementing."
-      : "";
+    const statusNote =
+      task.status.toLowerCase() === "in_progress"
+        ? " It has already been marked as in progress so just needs implementing."
+        : "";
 
     // Use appropriate task description based on source
-    const taskRef = task.source === "prd"
-      ? `PRD task ${task.id} (feature: ${task.featureId})`
-      : `beads task ${task.id}`;
+    const taskRef =
+      task.source === "prd"
+        ? `PRD task ${task.id} (feature: ${task.featureId})`
+        : `beads task ${task.id}`;
 
     return `${action} ${taskRef}.${statusNote} When finished please commit and push to branch. Signal completion with: ${COMPLETION_SIGNAL}`;
   }

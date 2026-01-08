@@ -654,6 +654,14 @@ export class Darwin {
     }
 
     this.logger.info(`Git sync complete: ${updated} updated, ${failed} failed, ${unchanged} unchanged`);
+
+    this.monologue.act('Checking for tasks to start...');
+    this.eventBus.publish('darwin', 'git_sync_complete', {
+      updated,
+      failed,
+      unchanged,
+    });
+
     return results;
   }
 
