@@ -1,0 +1,115 @@
+[
+  {
+    "category": "setup",
+    "description": "Create simplified PrdItem type definition",
+    "steps": [
+      "Update src/core/prd-types.ts",
+      "Replace hierarchical types with flat PrdItem interface",
+      "PrdItem has: category (string), description (string), steps (string[]), passes (boolean)",
+      "Export PrdDocument as PrdItem[]",
+      "Remove old feature/task types",
+      "Verify TypeScript compiles"
+    ],
+    "passes": false
+  },
+  {
+    "category": "setup",
+    "description": "Simplify PrdManager to just check prd.json existence",
+    "steps": [
+      "Update src/core/prd-manager.ts",
+      "Remove all methods except: load(), exists(), getItems()",
+      "load() reads prd.json and returns PrdItem[]",
+      "exists() returns boolean",
+      "getItems() returns the loaded items",
+      "Verify TypeScript compiles"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Create simplified CodeAgentModule with 4 tools",
+    "steps": [
+      "Backup current src/modules/code-agent.ts to code-agent.ts.bak",
+      "Create new simplified code-agent.ts (~300 lines)",
+      "Implement start_prd tool: git pull, check prd.json, spawn ralph.sh",
+      "Implement get_status tool: return session info",
+      "Implement stop_prd tool: kill ralph.sh process",
+      "Implement list_repos tool: return configured repos",
+      "Verify TypeScript compiles"
+    ],
+    "passes": false
+  },
+  {
+    "category": "cleanup",
+    "description": "Delete terminal-related files",
+    "steps": [
+      "Delete src/core/terminal-controller.ts",
+      "Delete src/core/terminal-types.ts",
+      "Delete src/core/terminal-proxy.ts",
+      "Delete src/core/terminal-proxy-protocol.ts",
+      "Delete src/core/terminal-pty-helper.ts",
+      "Delete src/core/progress-manager.ts",
+      "Verify TypeScript compiles"
+    ],
+    "passes": false
+  },
+  {
+    "category": "cleanup",
+    "description": "Delete CLI test files",
+    "steps": [
+      "Delete src/cli/terminald.ts",
+      "Delete src/cli/test-terminal.ts",
+      "Delete src/cli/test-enter.ts",
+      "Delete src/cli/test-submit.ts",
+      "Verify TypeScript compiles"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Simplify REPL commands",
+    "steps": [
+      "Update src/cli/repl.ts",
+      "Keep commands: start <repo>, status, stop, attach, help, quit",
+      "Remove task-specific commands",
+      "start command calls CodeAgent start_prd tool",
+      "Verify commands work in REPL"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Update config to remove terminal options",
+    "steps": [
+      "Update src/core/config.ts",
+      "Remove terminal-related config options",
+      "Keep: repos, defaults (maxIterations), autoStart",
+      "Verify TypeScript compiles"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Update darwin.ts to remove terminal references",
+    "steps": [
+      "Update src/core/darwin.ts",
+      "Remove imports of terminal modules",
+      "Keep git sync functionality",
+      "Keep module loading for CodeAgent",
+      "Verify TypeScript compiles and Darwin starts"
+    ],
+    "passes": false
+  },
+  {
+    "category": "verification",
+    "description": "Full build and startup test",
+    "steps": [
+      "Run npm run build",
+      "Verify no TypeScript errors",
+      "Run npm run start",
+      "Verify Darwin starts without errors",
+      "Verify CodeAgent module loads"
+    ],
+    "passes": false
+  }
+]
