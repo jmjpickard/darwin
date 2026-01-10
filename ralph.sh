@@ -83,7 +83,8 @@ run_with_agent() {
     case "$agent" in
         claude)
             # Use timeout to limit cost (no --max-turns flag exists, rely on prompt instructions)
-            result=$(timeout $TIMEOUT_SECONDS claude --print -p "$PROMPT" 2>&1) || exit_code=$?
+            # --dangerously-skip-permissions allows autonomous operation without approval prompts
+            result=$(timeout $TIMEOUT_SECONDS claude --print --dangerously-skip-permissions -p "$PROMPT" 2>&1) || exit_code=$?
             ;;
         codex)
             result=$(timeout $TIMEOUT_SECONDS codex --full-auto "$PROMPT" 2>&1) || exit_code=$?
