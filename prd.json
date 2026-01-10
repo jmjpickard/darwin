@@ -1,8 +1,8 @@
 [
   {
-    "category": "cleanup",
-    "description": "Remove all terminal infrastructure and update references so the build passes",
-    "action": "Delete src/core/terminal-controller.ts, src/core/terminal-types.ts, src/core/terminal-proxy.ts, src/core/terminal-proxy-protocol.ts, src/core/terminal-pty-helper.ts, src/core/progress-manager.ts, src/cli/terminald.ts, src/cli/test-terminal.ts, src/cli/test-enter.ts, src/cli/test-submit.ts. Then update src/core/darwin.ts, src/core/config.ts, and src/cli/repl.ts to remove all imports and references to deleted modules. Keep repl commands: start, status, stop, attach, help, quit.",
+    "category": "feature",
+    "description": "Rewrite code-agent to spawn ralph.sh for PRD execution",
+    "action": "Backup src/modules/code-agent.ts to src/modules/code-agent.ts.bak. Rewrite code-agent.ts with 4 tools: start_prd (spawns ralph.sh in a repo directory), get_status (returns current PRD progress), stop_prd (kills running ralph process), list_repos (lists configured repos from config).",
     "passes": false
   },
   {
@@ -12,9 +12,9 @@
     "passes": false
   },
   {
-    "category": "feature",
-    "description": "Rewrite code-agent to spawn ralph.sh for PRD execution",
-    "action": "Backup src/modules/code-agent.ts to src/modules/code-agent.ts.bak. Rewrite code-agent.ts with 4 tools: start_prd (spawns ralph.sh in a repo directory), get_status (returns current PRD progress), stop_prd (kills running ralph process), list_repos (lists configured repos from config).",
+    "category": "cleanup",
+    "description": "Remove all terminal infrastructure and update references so the build passes",
+    "action": "Delete src/core/terminal-controller.ts, src/core/terminal-types.ts, src/core/terminal-proxy.ts, src/core/terminal-proxy-protocol.ts, src/core/terminal-pty-helper.ts, src/core/progress-manager.ts, src/cli/terminald.ts, src/cli/test-terminal.ts, src/cli/test-enter.ts, src/cli/test-submit.ts. Then update src/core/darwin.ts, src/core/config.ts, and src/cli/repl.ts to remove all imports and references to deleted modules. Keep repl commands: start, status, stop, attach, help, quit.",
     "passes": false
   }
 ]

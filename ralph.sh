@@ -62,6 +62,7 @@ Append detailed progress to progress.txt after EVERY significant action:
 
 Log these events:
   - BRANCH: checked out or confirmed branch
+  - EVALUATE: assessed tasks and chose one with reasoning
   - READ: what file and what you learned
   - DELETE: file deleted
   - EDIT: file edited and summary of changes
@@ -74,16 +75,20 @@ Log these events:
   - STUCK: cannot proceed, reason
 
 TASK:
-1. Find the FIRST item in prd.json with passes:false
-2. Log: "[timestamp] STARTING: [category] - [description]"
-3. Execute the action described in that item
-4. Run: npm run build
-5. If build passes:
+1. Review ALL items in prd.json with passes:false
+2. Evaluate which task to do FIRST based on:
+   - Dependencies: does one task depend on another being done first?
+   - Risk: features before refactors, refactors before cleanup
+   - Build impact: will this task break the build until another is done?
+3. Log: "[timestamp] EVALUATE: Chose [category] - [description] because [reasoning]"
+4. Execute the action described in that item
+5. Run: npm run build
+6. If build passes:
    - Update prd.json to set passes:true for this item
    - Commit all changes with message: "ralph: [category] - [description]"
    - Log: "[timestamp] TASK_COMPLETE: [description]"
    - Output: <done>description</done>
-6. If build fails:
+7. If build fails:
    - Log: "[timestamp] TASK_FAIL: [specific error message]"
    - Output: <stuck>specific error description</stuck>
    - DO NOT try to fix it, just stop
