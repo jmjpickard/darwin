@@ -1,74 +1,20 @@
 [
   {
-    "action": "Delete src/core/terminal-controller.ts",
+    "category": "cleanup",
+    "description": "Remove all terminal infrastructure and update references so the build passes",
+    "action": "Delete src/core/terminal-controller.ts, src/core/terminal-types.ts, src/core/terminal-proxy.ts, src/core/terminal-proxy-protocol.ts, src/core/terminal-pty-helper.ts, src/core/progress-manager.ts, src/cli/terminald.ts, src/cli/test-terminal.ts, src/cli/test-enter.ts, src/cli/test-submit.ts. Then update src/core/darwin.ts, src/core/config.ts, and src/cli/repl.ts to remove all imports and references to deleted modules. Keep repl commands: start, status, stop, attach, help, quit.",
     "passes": false
   },
   {
-    "action": "Delete src/core/terminal-types.ts",
+    "category": "refactor",
+    "description": "Simplify PRD system to flat action/passes structure",
+    "action": "Update src/core/prd-types.ts to export only a flat PrdItem interface with fields: action (string), passes (boolean). Update src/core/prd-manager.ts to only have load(), exists(), getItems() methods that work with the new flat structure. Remove unused types and helpers.",
     "passes": false
   },
   {
-    "action": "Delete src/core/terminal-proxy.ts",
-    "passes": false
-  },
-  {
-    "action": "Delete src/core/terminal-proxy-protocol.ts",
-    "passes": false
-  },
-  {
-    "action": "Delete src/core/terminal-pty-helper.ts",
-    "passes": false
-  },
-  {
-    "action": "Delete src/core/progress-manager.ts",
-    "passes": false
-  },
-  {
-    "action": "Delete src/cli/terminald.ts",
-    "passes": false
-  },
-  {
-    "action": "Delete src/cli/test-terminal.ts",
-    "passes": false
-  },
-  {
-    "action": "Delete src/cli/test-enter.ts",
-    "passes": false
-  },
-  {
-    "action": "Delete src/cli/test-submit.ts",
-    "passes": false
-  },
-  {
-    "action": "Update src/core/darwin.ts to remove all imports and references to deleted terminal modules",
-    "passes": false
-  },
-  {
-    "action": "Update src/core/config.ts to remove terminal-related config options, keep repos and defaults",
-    "passes": false
-  },
-  {
-    "action": "Update src/cli/repl.ts to remove terminal-specific commands, keep: start, status, stop, attach, help, quit",
-    "passes": false
-  },
-  {
-    "action": "Update src/core/prd-types.ts with flat PrdItem interface: action (string), passes (boolean)",
-    "passes": false
-  },
-  {
-    "action": "Simplify src/core/prd-manager.ts to only have load(), exists(), getItems() methods",
-    "passes": false
-  },
-  {
-    "action": "Backup src/modules/code-agent.ts to code-agent.ts.bak",
-    "passes": false
-  },
-  {
-    "action": "Rewrite src/modules/code-agent.ts with 4 tools: start_prd (spawns ralph.sh), get_status, stop_prd, list_repos",
-    "passes": false
-  },
-  {
-    "action": "Run npm run build and verify no TypeScript errors",
+    "category": "feature",
+    "description": "Rewrite code-agent to spawn ralph.sh for PRD execution",
+    "action": "Backup src/modules/code-agent.ts to src/modules/code-agent.ts.bak. Rewrite code-agent.ts with 4 tools: start_prd (spawns ralph.sh in a repo directory), get_status (returns current PRD progress), stop_prd (kills running ralph process), list_repos (lists configured repos from config).",
     "passes": false
   }
 ]
