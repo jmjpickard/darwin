@@ -3,42 +3,42 @@
     "category": "feature",
     "description": "Create WorkspaceManager class for temporary repo workspaces",
     "action": "Create new file src/core/workspace-manager.ts with: (1) Workspace interface { id: string, workDir: string, repoName: string, sshUrl: string, createdAt: Date, status: 'creating'|'ready'|'in_use'|'cleaning' }, (2) WorkspaceManager class with methods: ensureWorkspacesDir() - creates ~/.darwin/workspaces/, create(repoName, sshUrl, defaultBranch?) - generates ID as repoName-timestamp, creates directory, runs 'git clone --depth 1 --branch defaultBranch sshUrl workDir', returns Workspace with status 'ready', cleanup(workspace) - rm -rf the workspace directory, cleanupAll() - removes all workspaces in the directory, cleanupStale() - scans and deletes any leftover workspaces (for startup), getActive() - returns current workspace or null. Export WorkspaceManager and Workspace from the file. This is a standalone new file with no breaking changes. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",
     "description": "Export WorkspaceManager from index.ts",
     "action": "Edit src/index.ts: Add export for WorkspaceManager and Workspace type from ./core/workspace-manager.js. This is an additive change with no breaking changes.",
-    "passes": false
+    "passes": true
   },
   {
     "category": "config",
     "description": "Add SSH repo fields to RepoConfig (backwards compatible)",
     "action": "Edit src/core/config.ts: (1) Add new OPTIONAL fields to RepoConfig interface (lines 11-17): sshUrl?: string (e.g. 'git@github.com:user/repo.git'), defaultBranch?: string (default 'main'), description?: string (context for Brain/prompts). Keep 'path' as REQUIRED - don't make it optional. (2) In normalizeRepoConfig() function, add defaulting: if defaultBranch is not set, default to 'main'. (3) In createTemplateConfig(), add a commented example showing the new sshUrl fields. All changes are backwards compatible - existing configs still work. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",
     "description": "Add SSH-based task execution to code-agent with workspace lifecycle",
     "action": "Edit src/modules/code-agent.ts: (1) Add import for WorkspaceManager and Workspace from ../core/workspace-manager.js, (2) Add class properties: private workspaceManager: WorkspaceManager and private currentWorkspace: Workspace | null = null, (3) Initialize workspaceManager = new WorkspaceManager() in constructor, (4) Add private helper getRepoPath(repo: RepoConfig): string that returns this.currentWorkspace?.workDir if currentWorkspace.repoName matches repo.name, otherwise returns repo.path (this maintains backwards compatibility), (5) Replace ALL occurrences of { cwd: repo.path } with { cwd: this.getRepoPath(repo) } - there are ~25+ locations in git commands and PrdManager instantiations, (6) In registerTools(), add new tool 'code_start_ssh_task' with parameters: repo (string), that: finds repo by name from config, validates it has sshUrl, creates workspace via workspaceManager.create(repo.name, repo.sshUrl, repo.defaultBranch), checks if ralph.sh exists in workspace, runs 'bash ralph.sh' in workspace directory, cleans up workspace on completion, returns success. (7) In handleTaskComplete() and handleTaskFailed(), add cleanup: if (this.currentWorkspace) { await this.workspaceManager.cleanup(this.currentWorkspace); this.currentWorkspace = null; }. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",
     "description": "Add 'task' command to REPL for SSH-based repo tasks",
     "action": "Edit src/cli/repl.ts: Add new case 'task' in the command handler switch statement. Parse repo name from parts[1]. If no repo name provided, show 'Usage: task <repo-name>'. Get the code agent module via darwin.getModule('codeagent'). Call the code_start_ssh_task tool handler with { repo: repoName }. Log the result. This adds a new REPL command for triggering SSH-based tasks.",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",
     "description": "Add workspace cleanup on Darwin startup and shutdown",
     "action": "Edit src/core/darwin.ts: (1) In the stop() method, after stopping modules, add: const codeAgentModule = this.modules.get('codeagent'); if (codeAgentModule) { try { await codeAgentModule.workspaceManager?.cleanupAll(); } catch (e) { this.logger.warn('Workspace cleanup failed', e); } }. (2) In the start() method, early in initialization (before loading modules), add cleanup of stale workspaces: const WorkspaceManager = await import('./workspace-manager.js'); const wm = new WorkspaceManager.WorkspaceManager(); await wm.cleanupStale(); This ensures no orphan workspaces remain after crash or normal shutdown. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "docs",
     "description": "Update CLAUDE.md with workspace workflow documentation",
     "action": "Edit CLAUDE.md: Add a new section '## SSH Workspace Workflow' after the Architecture section documenting: (1) How to configure repos with sshUrl in config.json (show example with sshUrl, defaultBranch, description), (2) The 'task <repo>' REPL command and what it does, (3) Where workspaces are created (~/.darwin/workspaces/), (4) Cleanup behavior (auto-delete after PR/task completion), (5) Error handling (stale cleanup on startup). Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   }
 ]

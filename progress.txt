@@ -1,19 +1,73 @@
 # Ralph Progress Log
-Started: Sun 11 Jan 13:55:48 GMT 2026
-Branch: ralph/20260111-135548
+Started: Sun 11 Jan 21:40:36 GMT 2026
+Branch: ralph/20260111-214036
 Max iterations: 20
 
-[2026-01-11 13:55:48] ITERATION 1: Starting with claude
-[2026-01-11 13:56:16] BRANCH: Checked out branch: ralph/20260111-135548
-[2026-01-11 13:56:31] EVALUATE: Chose feature - Rewrite code-agent.ts as simple ralph.sh spawner because: features before refactors/cleanup, backup already exists, and this is the core functionality change that other tasks depend on understanding
-[2026-01-11 13:57:13] EDIT: Rewrote code-agent.ts as simple ralph.sh spawner - removed all terminal/PTY/beads/prd imports, simplified to just spawn ralph.sh with 4 tools: start_prd, get_status, stop_prd, list_repos
-[2026-01-11 13:57:33] BUILD_PASS: npm run build succeeded
-[2026-01-11 13:58:10] COMMIT: ralph: feature - Rewrite code-agent.ts as simple ralph.sh spawner
-[2026-01-11 13:58:10] TASK_COMPLETE: Rewrite code-agent.ts as simple ralph.sh spawner
-[2026-01-11 13:58:17] ITERATION 2: Starting with claude
-[2026-01-11 13:58:37] EVALUATE: Chose refactor - Simplify prd-types.ts to flat structure because: refactors before cleanup, prd-types must be done before prd-manager (dependency), and this is a foundational change
-[2026-01-11 13:58:52] EDIT: Simplified prd-types.ts to flat PrdItem interface with category, description, action, passes fields
-[2026-01-11 14:01:23] EDIT: Simplified prd-manager.ts to flat PrdItem structure with exists, load, getItems methods
-[2026-01-11 14:01:23] DELETE: Deleted terminal infrastructure files (terminal-controller, terminal-types, terminal-proxy, terminal-proxy-protocol, terminal-pty-helper, progress-manager, status-manager, terminald, test-terminal, test-enter, test-submit, prd-manager.test, progress-manager.test)
-[2026-01-11 14:01:23] EDIT: Removed terminal imports from brain.ts and index.ts, removed observeTerminal and parseTerminalAction methods from brain.ts
-[2026-01-11 14:01:23] BUILD_PASS: npm run build succeeded
+[2026-01-11 21:40:36] ITERATION 1: Starting with claude
+[2026-01-11 21:41:15] BRANCH: Created and checked out branch: ralph/20260111-214036
+[2026-01-11 21:41:15] EVALUATE: Chose [feature] - Create WorkspaceManager class for temporary repo workspaces because it has NO dependencies (it's a standalone new file), other tasks depend on it (code-agent.ts needs WorkspaceManager, index.ts export needs it), and it won't break the build since it's purely additive
+[2026-01-11 21:41:45] EDIT: Created src/core/workspace-manager.ts with Workspace interface and WorkspaceManager class with methods: ensureWorkspacesDir, create, cleanup, cleanupAll, cleanupStale, getActive
+[2026-01-11 21:42:00] BUILD: npm run build started
+[2026-01-11 21:42:05] BUILD_PASS: build succeeded
+[2026-01-11 21:42:20] COMMIT: ralph: feature - Create WorkspaceManager class for temporary repo workspaces
+[2026-01-11 21:42:30] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:42:30] TASK_COMPLETE: Create WorkspaceManager class for temporary repo workspaces
+[2026-01-11 21:42:09] ITERATION 2: Starting with claude
+[2026-01-11 21:42:35] EVALUATE: Chose [feature] - Export WorkspaceManager from index.ts because WorkspaceManager already exists (passes: true), other tasks need this export (code-agent, darwin.ts), and it's a simple additive change with no build risk
+[2026-01-11 21:42:45] EDIT: Added export for WorkspaceManager class and Workspace type from ./core/workspace-manager.js to src/index.ts
+[2026-01-11 21:42:50] BUILD: npm run build started
+[2026-01-11 21:42:52] BUILD_PASS: build succeeded
+[2026-01-11 21:43:00] COMMIT: ralph: feature - Export WorkspaceManager from index.ts
+[2026-01-11 21:43:05] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:43:05] TASK_COMPLETE: Export WorkspaceManager from index.ts
+[2026-01-11 21:43:31] ITERATION 3: Starting with claude
+[2026-01-11 21:44:00] EVALUATE: Chose [config] - Add SSH repo fields to RepoConfig (backwards compatible) because code-agent.ts needs sshUrl field to implement SSH-based tasks, this is a prerequisite for the code-agent feature, and it's backwards compatible (adds optional fields only)
+[2026-01-11 21:44:10] READ: src/core/config.ts - found RepoConfig interface at lines 11-17, normalizeRepoConfig at line 207, createTemplateConfig at line 150
+[2026-01-11 21:44:30] EDIT: Added sshUrl?, defaultBranch?, description? to RepoConfig interface; updated normalizeRepoConfig to include new fields with defaultBranch defaulting to 'main'; added commented example in createTemplateConfig
+[2026-01-11 21:44:35] BUILD: npm run build started
+[2026-01-11 21:44:40] BUILD_PASS: build succeeded
+[2026-01-11 21:44:50] COMMIT: ralph: config - Add SSH repo fields to RepoConfig (backwards compatible)
+[2026-01-11 21:44:55] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:44:55] TASK_COMPLETE: Add SSH repo fields to RepoConfig (backwards compatible)
+[2026-01-11 21:45:14] ITERATION 4: Starting with claude
+[2026-01-11 21:45:30] BRANCH: Confirmed on branch ralph/20260111-214036
+[2026-01-11 21:45:35] EVALUATE: Chose [feature] - Add SSH-based task execution to code-agent with workspace lifecycle because it is the core feature that other tasks depend on (REPL task command needs code_start_ssh_task tool, darwin.ts needs workspaceManager property), has all prerequisites done (WorkspaceManager exists, RepoConfig has sshUrl fields), and is the logical next step
+[2026-01-11 21:46:00] READ: src/modules/code-agent.ts - understood existing structure
+[2026-01-11 21:46:20] EDIT: Added WorkspaceManager import, workspaceManager and currentWorkspace properties, getRepoPath helper, and code_start_ssh_task tool with full workspace lifecycle (clone, check ralph.sh, run, cleanup)
+[2026-01-11 21:46:30] BUILD: npm run build started
+[2026-01-11 21:46:32] BUILD_PASS: build succeeded
+[2026-01-11 21:46:40] COMMIT: ralph: feature - Add SSH-based task execution to code-agent with workspace lifecycle
+[2026-01-11 21:46:45] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:46:45] TASK_COMPLETE: Add SSH-based task execution to code-agent with workspace lifecycle
+[2026-01-11 21:47:40] ITERATION 5: Starting with claude
+[2026-01-11 21:49:50] EVALUATE: Chose [feature] - Add 'task' command to REPL for SSH-based repo tasks because it is a feature that depends on code_start_ssh_task tool (now complete), is simpler than darwin.ts cleanup, and adds user-facing functionality
+[2026-01-11 21:49:50] READ: src/cli/repl.ts - understood command handling structure in handleInput function
+[2026-01-11 21:49:50] EDIT: Added 'task <repo>' command handler, handleTaskCommand function, and updated help text
+[2026-01-11 21:49:50] BUILD: npm run build started
+[2026-01-11 21:49:50] BUILD_PASS: build succeeded
+[2026-01-11 21:49:50] COMMIT: ralph: feature - Add 'task' command to REPL for SSH-based repo tasks
+[2026-01-11 21:49:50] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:49:50] TASK_COMPLETE: Add 'task' command to REPL for SSH-based repo tasks
+[2026-01-11 21:49:55] ITERATION 6: Starting with claude
+[2026-01-11 21:50:30] EVALUATE: Chose [feature] - Add workspace cleanup on Darwin startup and shutdown because it is a feature task (higher priority than docs), all dependencies are done (WorkspaceManager exists and is exported), and the docs task should document working functionality
+[2026-01-11 21:50:40] READ: src/core/darwin.ts - understood structure with start() and stop() methods
+[2026-01-11 21:51:00] EDIT: Added WorkspaceManager import; added stale workspace cleanup in start() before loading modules; added codeagent workspace cleanup in stop() after stopping modules
+[2026-01-11 21:51:10] BUILD: npm run build started
+[2026-01-11 21:51:15] BUILD_PASS: build succeeded
+[2026-01-11 21:51:30] COMMIT: ralph: feature - Add workspace cleanup on Darwin startup and shutdown
+[2026-01-11 21:51:35] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:51:35] TASK_COMPLETE: Add workspace cleanup on Darwin startup and shutdown
+[2026-01-11 21:52:08] ITERATION 7: Starting with claude
+[2026-01-11 21:52:10] BRANCH: Confirmed on branch ralph/20260111-214036
+[2026-01-11 21:52:15] EVALUATE: Chose [docs] - Update CLAUDE.md with workspace workflow documentation because it is the only remaining task with passes:false, all feature tasks are complete, and this documents the newly implemented SSH workspace functionality
+[2026-01-11 21:52:20] READ: CLAUDE.md - understood structure, need to add new section after Architecture
+[2026-01-11 21:52:30] EDIT: Added '## SSH Workspace Workflow' section after Architecture section with: config.json example showing sshUrl/defaultBranch/description fields, 'task <repo>' REPL command usage, workspace location (~/.darwin/workspaces/), cleanup behavior (auto-delete after PR/task, startup stale cleanup), error handling
+[2026-01-11 21:52:35] BUILD: npm run build started
+[2026-01-11 21:52:40] BUILD_PASS: build succeeded
+[2026-01-11 21:52:50] COMMIT: ralph: docs - Update CLAUDE.md with workspace workflow documentation
+[2026-01-11 21:52:55] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:52:55] TASK_COMPLETE: Update CLAUDE.md with workspace workflow documentation
+[2026-01-11 21:53:00] ALL_COMPLETE: All PRD items passed
+[2026-01-11 21:53:10] PR_CREATED: https://github.com/jmjpickard/darwin/pull/2
+[2026-01-11 21:54:00] SUCCESS: All PRD items passed
+Completed at: Sun 11 Jan 21:54:00 GMT 2026

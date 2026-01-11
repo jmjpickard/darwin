@@ -213,6 +213,18 @@ async function handleInput(ctx: ReplContext, input: string): Promise<void> {
     return;
   }
 
+  // Handle 'task <repo-name>' command for SSH-based repo tasks
+  if (lower.startsWith('task ') || lower === 'task') {
+    const parts = input.split(/\s+/);
+    const repoName = parts[1];
+    if (!repoName) {
+      console.log('Usage: task <repo-name>\n');
+      return;
+    }
+    await handleTaskCommand(ctx, repoName);
+    return;
+  }
+
   if (lower === 'mute' || lower === 'quiet') {
     ctx.monologueEnabled = false;
     ctx.darwin.getMonologue().setConsoleEnabled(false);
@@ -255,6 +267,7 @@ ${DIM}Darwin's thoughts stream above. Just type to chat.${RESET}
 Commands:
   status       - What's Darwin doing right now?
   tasks        - Show ready tasks
+  task <repo>  - Start SSH-based task for a repo
   thoughts     - Show recent thoughts
   pause        - Stop picking up new tasks
   resume       - Resume picking up tasks
@@ -565,5 +578,25 @@ async function handleNaturalLanguage(ctx: ReplContext, input: string): Promise<v
     console.log('');
   } catch (error) {
     console.log(`Error: ${error}\n`);
+  }
+}
+
+/**
+ * Handle 'task <repo-name>' command for SSH-based repo tasks
+ */
+async function handleTaskCommand(ctx: ReplContext, repoName: string): Promise<void> {
+  console.log(`Starting SSH task for repo: ${repoName}...`);
+
+  try {
+    // Call the code_start_ssh_task tool via the Brain
+    const result = await ctx.darwin.getBrain().callTool('code_start_ssh_task', { repo: repoName });
+    if (result.error) {
+      console.log(`Error: ${result.error}`);
+    } else {
+      console.log(JSON.stringify(result.result, null, 2));
+    }
+    console.log('');
+  } catch (error) {
+    console.log(`Error starting task: ${error}\n`);
   }
 }

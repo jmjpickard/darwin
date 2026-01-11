@@ -21,6 +21,7 @@ export {
 export { Monologue, getMonologue, resetMonologue } from './core/monologue.js';
 export { Consciousness } from './core/consciousness.js';
 export { SubAgentManager } from './core/sub-agents.js';
+export { WorkspaceManager } from './core/workspace-manager.js';
 
 // Integrations
 export { OpenRouterClient, getOpenRouterClient, resetOpenRouterClient } from './integrations/openrouter.js';
@@ -52,3 +53,4 @@ export type { ConsciousnessConfig, ConsciousnessState } from './core/consciousne
 export type { SubAgent, SubAgentType, SubAgentStatus, SubAgentConfig } from './core/sub-agents.js';
 export type { OpenRouterConfig, ResearchResult } from './integrations/openrouter.js';
 export type { WebSearchConfig, SearchResult } from './integrations/web-search.js';
+export type { Workspace } from './core/workspace-manager.js';
