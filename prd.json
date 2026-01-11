@@ -21,7 +21,7 @@
     "category": "feature",
     "description": "Add SSH-based task execution to code-agent with workspace lifecycle",
     "action": "Edit src/modules/code-agent.ts: (1) Add import for WorkspaceManager and Workspace from ../core/workspace-manager.js, (2) Add class properties: private workspaceManager: WorkspaceManager and private currentWorkspace: Workspace | null = null, (3) Initialize workspaceManager = new WorkspaceManager() in constructor, (4) Add private helper getRepoPath(repo: RepoConfig): string that returns this.currentWorkspace?.workDir if currentWorkspace.repoName matches repo.name, otherwise returns repo.path (this maintains backwards compatibility), (5) Replace ALL occurrences of { cwd: repo.path } with { cwd: this.getRepoPath(repo) } - there are ~25+ locations in git commands and PrdManager instantiations, (6) In registerTools(), add new tool 'code_start_ssh_task' with parameters: repo (string), that: finds repo by name from config, validates it has sshUrl, creates workspace via workspaceManager.create(repo.name, repo.sshUrl, repo.defaultBranch), checks if ralph.sh exists in workspace, runs 'bash ralph.sh' in workspace directory, cleans up workspace on completion, returns success. (7) In handleTaskComplete() and handleTaskFailed(), add cleanup: if (this.currentWorkspace) { await this.workspaceManager.cleanup(this.currentWorkspace); this.currentWorkspace = null; }. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",

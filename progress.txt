@@ -26,3 +26,13 @@ Max iterations: 20
 [2026-01-11 21:44:30] EDIT: Added sshUrl?, defaultBranch?, description? to RepoConfig interface; updated normalizeRepoConfig to include new fields with defaultBranch defaulting to 'main'; added commented example in createTemplateConfig
 [2026-01-11 21:44:35] BUILD: npm run build started
 [2026-01-11 21:44:40] BUILD_PASS: build succeeded
+[2026-01-11 21:44:50] COMMIT: ralph: config - Add SSH repo fields to RepoConfig (backwards compatible)
+[2026-01-11 21:44:55] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:44:55] TASK_COMPLETE: Add SSH repo fields to RepoConfig (backwards compatible)
+[2026-01-11 21:45:14] ITERATION 4: Starting with claude
+[2026-01-11 21:45:30] BRANCH: Confirmed on branch ralph/20260111-214036
+[2026-01-11 21:45:35] EVALUATE: Chose [feature] - Add SSH-based task execution to code-agent with workspace lifecycle because it is the core feature that other tasks depend on (REPL task command needs code_start_ssh_task tool, darwin.ts needs workspaceManager property), has all prerequisites done (WorkspaceManager exists, RepoConfig has sshUrl fields), and is the logical next step
+[2026-01-11 21:46:00] READ: src/modules/code-agent.ts - understood existing structure
+[2026-01-11 21:46:20] EDIT: Added WorkspaceManager import, workspaceManager and currentWorkspace properties, getRepoPath helper, and code_start_ssh_task tool with full workspace lifecycle (clone, check ralph.sh, run, cleanup)
+[2026-01-11 21:46:30] BUILD: npm run build started
+[2026-01-11 21:46:32] BUILD_PASS: build succeeded
