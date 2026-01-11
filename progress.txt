@@ -17,3 +17,6 @@ Max iterations: 20
 [2026-01-11 21:42:45] EDIT: Added export for WorkspaceManager class and Workspace type from ./core/workspace-manager.js to src/index.ts
 [2026-01-11 21:42:50] BUILD: npm run build started
 [2026-01-11 21:42:52] BUILD_PASS: build succeeded
+[2026-01-11 21:43:00] COMMIT: ralph: feature - Export WorkspaceManager from index.ts
+[2026-01-11 21:43:05] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:43:05] TASK_COMPLETE: Export WorkspaceManager from index.ts
