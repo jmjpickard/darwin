@@ -16,12 +16,6 @@ export {
   getConfigPath,
   getEnabledRepos,
 } from './core/config.js';
-export { TerminalController } from './core/terminal-controller.js';
-export {
-  DEFAULT_PATTERNS,
-  DANGEROUS_PATTERNS,
-  containsDangerousPattern,
-} from './core/terminal-types.js';
 
 // New: Consciousness and Monologue
 export { Monologue, getMonologue, resetMonologue } from './core/monologue.js';
@@ -51,17 +45,6 @@ export type {
   WebSearchUserConfig,
   CodeAgentUserConfig,
 } from './core/config.js';
-export type {
-  TerminalBackend,
-  TerminalState,
-  TerminalAction,
-  TerminalActionType,
-  TerminalObservation,
-  TerminalControllerConfig,
-  TerminalPatterns,
-  TerminalEvents,
-  ActionResult,
-} from './core/terminal-types.js';
 
 // New types
 export type { Thought, ThoughtType, Priority, MonologueConfig } from './core/monologue.js';

@@ -9,7 +9,6 @@
 
 import { EventEmitter } from 'events';
 import { Logger } from './logger.js';
-import type { TerminalObservation, TerminalAction, TerminalActionType } from './terminal-types.js';
 
 type BrainProvider = 'ollama' | 'openrouter';
 
@@ -135,7 +134,6 @@ export class DarwinBrain extends EventEmitter {
   private tools: Tool[] = [];
   private toolHandlers: Map<string, (args: Record<string, unknown>) => Promise<unknown>> = new Map();
   private systemPrompt: string;
-  private terminalSystemPrompt: string;
   private conversationHistory: ChatMessage[] = [];
   private maxHistoryLength = 20; // Keep last N messages for context
 
@@ -144,7 +142,6 @@ export class DarwinBrain extends EventEmitter {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.logger = new Logger('Brain');
     this.systemPrompt = this.buildSystemPrompt();
-    this.terminalSystemPrompt = this.buildTerminalSystemPrompt();
   }
 
   private buildSystemPrompt(): string {
@@ -167,33 +164,6 @@ IMPORTANT - How to respond:
 5. Be proactive about offering relevant follow-up actions.
 
 Keep responses brief and useful. Avoid jargon. You're having a chat, not writing documentation.`;
-  }
-
-  private buildTerminalSystemPrompt(): string {
-    return `You are Darwin's terminal controller. You observe a Claude Code REPL session and decide what to type.
-
-Your job is to guide Claude through completing a task by:
-1. Providing clear instructions when Claude is ready for input
-2. Answering questions Claude asks (y/n, confirmations, choices)
-3. Waiting patiently when Claude is working
-4. Recognizing when the task is complete
-
-IMPORTANT RULES:
-- When state is 'processing', always return {"type":"wait","waitMs":500,"reason":"Claude is working"}
-- When state is 'ready' and task is complete, return {"type":"send","content":"/exit","reason":"Task complete"}
-- When state is 'question', analyze the question and answer appropriately
-- For y/n questions, usually answer 'y' unless the action seems dangerous
-- For file creation/modification confirmations, answer 'y'
-- For destructive actions (delete, remove, etc.), be cautious
-- Never type dangerous commands (rm -rf, sudo, force push to main, etc.)
-
-Respond with ONLY a valid JSON object matching this schema:
-{
-  "type": "wait" | "send" | "answer" | "ctrl_c" | "enter",
-  "content": "text to type (for send/answer)",
-  "waitMs": 500,
-  "reason": "brief explanation"
-}`;
   }
 
   /**
@@ -903,129 +873,6 @@ REASON: <brief explanation>`;
     } catch {
       this.logger.warn('Decision request failed, defaulting to false');
       return false;
-    }
-  }
-
-  /**
-   * Observe a terminal session and decide what action to take
-   *
-   * This is the core method for PTY-based Claude Code interaction.
-   * The model observes the terminal state and decides what to type next.
-   *
-   * @param observation Current terminal state
-   * @param taskContext Description of the task being worked on
-   * @returns Action to execute on the terminal
-   */
-  async observeTerminal(
-    observation: TerminalObservation,
-    taskContext: string
-  ): Promise<TerminalAction> {
-    // Fast path: if processing, always wait
-    if (observation.state === 'processing' && observation.isStreaming) {
-      return { type: 'wait', waitMs: 500, reason: 'Claude is working' };
-    }
-
-    // Fast path: if limit reached, wait for reset
-    if (observation.state === 'limit_reached') {
-      const waitMs = observation.limitResetTime
-        ? Math.max(0, observation.limitResetTime.getTime() - Date.now())
-        : 3600_000; // default 1 hour
-      return { type: 'wait', waitMs, reason: 'Usage limit reached' };
-    }
-
-    // Build prompt for the model
-    const prompt = `${this.terminalSystemPrompt}
-
-TASK: ${taskContext}
-
-CURRENT STATE:
-- Terminal state: ${observation.state}
-- Prompt visible: ${observation.promptVisible}
-- Is streaming: ${observation.isStreaming}
-- Time since last action: ${observation.timeSinceLastActionMs}ms
-- Session duration: ${observation.elapsedMs}ms
-${observation.lastQuestion ? `- Last question: ${observation.lastQuestion}` : ''}
-
-RECENT OUTPUT (last ${observation.recentOutput.length} chars):
-\`\`\`
-${observation.recentOutput}
-\`\`\`
-
-What action should I take? Respond with ONLY a JSON object.`;
-
-    try {
-      if (this.config.provider === 'openrouter') {
-        const data = await this.requestChatCompletion(
-          [{ role: 'user', content: prompt }],
-          { maxTokens: 150, temperature: 0.3 }
-        );
-        return this.parseTerminalAction(data.message.content || '');
-      }
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15_000); // 15s timeout for observation
-
-      const response = await fetch(`${this.config.ollamaUrl}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.config.model,
-          prompt,
-          stream: false,
-          options: {
-            num_predict: 150,
-            temperature: 0.3, // Low temperature for deterministic actions
-          },
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`Ollama error: ${response.status}`);
-      }
-
-      const data = await response.json() as GenerateResponse;
-      return this.parseTerminalAction(data.response);
-    } catch (error) {
-      this.logger.warn('Terminal observation failed, defaulting to wait:', error);
-      return { type: 'wait', waitMs: 1000, reason: 'Observation failed' };
-    }
-  }
-
-  /**
-   * Parse the model response into a TerminalAction
-   */
-  private parseTerminalAction(response: string): TerminalAction {
-    try {
-      // Extract JSON from response (may have text before/after)
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        this.logger.warn('No JSON found in response:', response.slice(0, 100));
-        return { type: 'wait', waitMs: 500, reason: 'Could not parse response' };
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-
-      // Validate type field
-      const validTypes: TerminalActionType[] = ['type', 'enter', 'send', 'ctrl_c', 'ctrl_d', 'wait', 'answer'];
-      const actionType = parsed.type as string;
-
-      if (!validTypes.includes(actionType as TerminalActionType)) {
-        this.logger.warn(`Invalid action type: ${actionType}`);
-        return { type: 'wait', waitMs: 500, reason: `Invalid action type: ${actionType}` };
-      }
-
-      return {
-        type: actionType as TerminalActionType,
-        content: typeof parsed.content === 'string' ? parsed.content : undefined,
-        waitMs: typeof parsed.waitMs === 'number' ? parsed.waitMs : undefined,
-        reason: typeof parsed.reason === 'string' ? parsed.reason : 'No reason provided',
-      };
-    } catch (err) {
-      this.logger.warn('Failed to parse terminal action:', err);
-      return { type: 'wait', waitMs: 500, reason: 'JSON parse error' };
     }
   }
 
