@@ -64,3 +64,8 @@ Max iterations: 20
 [2026-01-11 21:52:30] EDIT: Added '## SSH Workspace Workflow' section after Architecture section with: config.json example showing sshUrl/defaultBranch/description fields, 'task <repo>' REPL command usage, workspace location (~/.darwin/workspaces/), cleanup behavior (auto-delete after PR/task, startup stale cleanup), error handling
 [2026-01-11 21:52:35] BUILD: npm run build started
 [2026-01-11 21:52:40] BUILD_PASS: build succeeded
+[2026-01-11 21:52:50] COMMIT: ralph: docs - Update CLAUDE.md with workspace workflow documentation
+[2026-01-11 21:52:55] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:52:55] TASK_COMPLETE: Update CLAUDE.md with workspace workflow documentation
+[2026-01-11 21:53:00] ALL_COMPLETE: All PRD items passed
+[2026-01-11 21:53:10] PR_CREATED: https://github.com/jmjpickard/darwin/pull/2
