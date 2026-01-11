@@ -1,19 +1,15 @@
 # Ralph Progress Log
-Started: Sun 11 Jan 13:55:48 GMT 2026
-Branch: ralph/20260111-135548
+Started: Sun 11 Jan 16:08:56 GMT 2026
+Branch: ralph/20260111-160856
 Max iterations: 20
 
-[2026-01-11 13:55:48] ITERATION 1: Starting with claude
-[2026-01-11 13:56:16] BRANCH: Checked out branch: ralph/20260111-135548
-[2026-01-11 13:56:31] EVALUATE: Chose feature - Rewrite code-agent.ts as simple ralph.sh spawner because: features before refactors/cleanup, backup already exists, and this is the core functionality change that other tasks depend on understanding
-[2026-01-11 13:57:13] EDIT: Rewrote code-agent.ts as simple ralph.sh spawner - removed all terminal/PTY/beads/prd imports, simplified to just spawn ralph.sh with 4 tools: start_prd, get_status, stop_prd, list_repos
-[2026-01-11 13:57:33] BUILD_PASS: npm run build succeeded
-[2026-01-11 13:58:10] COMMIT: ralph: feature - Rewrite code-agent.ts as simple ralph.sh spawner
-[2026-01-11 13:58:10] TASK_COMPLETE: Rewrite code-agent.ts as simple ralph.sh spawner
-[2026-01-11 13:58:17] ITERATION 2: Starting with claude
-[2026-01-11 13:58:37] EVALUATE: Chose refactor - Simplify prd-types.ts to flat structure because: refactors before cleanup, prd-types must be done before prd-manager (dependency), and this is a foundational change
-[2026-01-11 13:58:52] EDIT: Simplified prd-types.ts to flat PrdItem interface with category, description, action, passes fields
-[2026-01-11 14:01:23] EDIT: Simplified prd-manager.ts to flat PrdItem structure with exists, load, getItems methods
-[2026-01-11 14:01:23] DELETE: Deleted terminal infrastructure files (terminal-controller, terminal-types, terminal-proxy, terminal-proxy-protocol, terminal-pty-helper, progress-manager, status-manager, terminald, test-terminal, test-enter, test-submit, prd-manager.test, progress-manager.test)
-[2026-01-11 14:01:23] EDIT: Removed terminal imports from brain.ts and index.ts, removed observeTerminal and parseTerminalAction methods from brain.ts
-[2026-01-11 14:01:23] BUILD_PASS: npm run build succeeded
+[2026-01-11 16:08:56] ITERATION 1: Starting with claude
+[2026-01-11 16:15:32] BRANCH: Created and checked out branch: ralph/20260111-160856
+[2026-01-11 16:15:32] EVALUATE: Chose config - "Extend RepoConfig interface with SSH URL support" because it is the foundational config change that all other tasks depend on. The WorkspaceManager (feature), normalizeRepoConfig update (config), and all code-agent changes require the RepoConfig interface to have the sshUrl, defaultBranch, and description fields first. This must be done before any SSH-based functionality can be implemented.
+[2026-01-11 16:16:45] EDIT: Updated RepoConfig interface in src/core/config.ts - made path optional, made name required, added sshUrl, defaultBranch, and description fields
+[2026-01-11 16:16:50] BUILD_FAIL: Type errors in darwin.ts - repo.path is now optional (string | undefined) but code expects string. Errors at lines 675, 680, 702, 709, 725, 734, 738. This requires the normalizeRepoConfig task (task 2) to be done together.
+[2026-01-11 16:17:00] EVALUATE: Re-evaluating - Task 1 and Task 2 must be done together since they form an atomic unit. Making path optional in RepoConfig requires updating normalizeRepoConfig to validate repos properly.
+[2026-01-11 16:18:10] EDIT: Updated normalizeRepoConfig() in src/core/config.ts - added extractRepoNameFromSshUrl helper, modified validation to require path OR sshUrl, derive name from sshUrl if needed, default defaultBranch to 'main'
+[2026-01-11 16:18:20] EDIT: Updated syncRepo() in src/core/darwin.ts - added early return to skip repos without local path (SSH-only repos)
+[2026-01-11 16:18:25] BUILD_PASS: npm run build succeeded
+[2026-01-11 16:18:30] COMMIT: Preparing to commit tasks 1 and 2

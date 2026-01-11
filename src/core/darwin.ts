@@ -669,7 +669,13 @@ export class Darwin {
    * Sync a single repo (git pull)
    */
   private async syncRepo(repo: RepoConfig): Promise<GitSyncResult> {
-    const repoName = repo.name || repo.path;
+    const repoName = repo.name;
+
+    // Skip repos without a local path (SSH-only repos)
+    if (!repo.path) {
+      this.logger.debug(`Git sync: Skipping ${repoName} (no local path, SSH-only repo)`);
+      return { repo: repoName, success: true, updated: false };
+    }
 
     if (this.gitSyncConfig.prdReposOnly) {
       const prdPath = join(repo.path, 'prd.json');

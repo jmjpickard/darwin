@@ -9,11 +9,14 @@ import { homedir } from 'os';
 import { join, basename } from 'path';
 
 export interface RepoConfig {
-  path: string;
-  name?: string; // Display name, defaults to directory name
+  path?: string; // Local filesystem path (optional if sshUrl is provided)
+  name: string; // Display name (required)
   enabled: boolean;
   testCommand?: string; // Override default test command
   typecheckCommand?: string; // Override default typecheck command
+  sshUrl?: string; // SSH clone URL (e.g. 'git@github.com:user/repo.git')
+  defaultBranch?: string; // Default branch to clone/checkout (default: 'main')
+  description?: string; // Context for Brain/prompts about this repo
 }
 
 export interface ConsciousnessUserConfig {
@@ -202,19 +205,48 @@ export async function createTemplateConfig(): Promise<void> {
 }
 
 /**
+ * Extract repo name from SSH URL
+ * e.g. 'git@github.com:user/synapse.git' -> 'synapse'
+ */
+function extractRepoNameFromSshUrl(sshUrl: string): string {
+  // Match patterns like git@github.com:user/repo.git or ssh://git@host/user/repo.git
+  const match = sshUrl.match(/\/([^/]+?)(?:\.git)?$/);
+  return match ? match[1] : sshUrl;
+}
+
+/**
  * Validate and normalize a repo config
  */
 function normalizeRepoConfig(repo: Partial<RepoConfig>, index: number): RepoConfig {
-  if (!repo.path || typeof repo.path !== 'string') {
-    throw new Error(`repos[${index}].path is required and must be a string`);
+  // Require at least one of path or sshUrl
+  const hasPath = repo.path && typeof repo.path === 'string';
+  const hasSshUrl = repo.sshUrl && typeof repo.sshUrl === 'string';
+
+  if (!hasPath && !hasSshUrl) {
+    throw new Error(`repos[${index}] must have either 'path' or 'sshUrl' set`);
+  }
+
+  // Derive name: explicit name > extract from sshUrl > basename of path
+  let name: string;
+  if (repo.name && typeof repo.name === 'string') {
+    name = repo.name;
+  } else if (hasSshUrl) {
+    name = extractRepoNameFromSshUrl(repo.sshUrl!);
+  } else if (hasPath) {
+    name = basename(repo.path!);
+  } else {
+    throw new Error(`repos[${index}].name could not be determined`);
   }
 
   return {
-    path: repo.path,
-    name: repo.name || basename(repo.path),
+    path: hasPath ? repo.path : undefined,
+    name,
     enabled: repo.enabled !== false,
     testCommand: repo.testCommand,
     typecheckCommand: repo.typecheckCommand,
+    sshUrl: hasSshUrl ? repo.sshUrl : undefined,
+    defaultBranch: repo.defaultBranch || 'main',
+    description: repo.description,
   };
 }
 

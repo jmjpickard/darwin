@@ -3,13 +3,13 @@
     "category": "config",
     "description": "Extend RepoConfig interface with SSH URL support",
     "action": "Edit src/core/config.ts: Update the RepoConfig interface (lines 11-17) to add optional fields: sshUrl (string, e.g. 'git@github.com:user/repo.git'), defaultBranch (string, default 'main'), description (string, context for Brain/prompts). Make 'path' optional since SSH-based repos won't have it. Make 'name' required (currently optional). Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "config",
     "description": "Update normalizeRepoConfig to validate SSH repos",
     "action": "Edit src/core/config.ts: Modify normalizeRepoConfig() function (lines 207-219) to: (1) Allow path to be undefined if sshUrl is provided, (2) Require at least one of path or sshUrl to be set, (3) Default name from sshUrl by extracting repo name (e.g. 'git@github.com:user/synapse.git' -> 'synapse'), (4) Default defaultBranch to 'main' if not provided. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "config",
