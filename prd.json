@@ -9,7 +9,7 @@
     "category": "feature",
     "description": "Export WorkspaceManager from index.ts",
     "action": "Edit src/index.ts: Add export for WorkspaceManager and Workspace type from ./core/workspace-manager.js. This is an additive change with no breaking changes.",
-    "passes": false
+    "passes": true
   },
   {
     "category": "config",
