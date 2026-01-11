@@ -15,7 +15,7 @@
     "category": "config",
     "description": "Add SSH repo fields to RepoConfig (backwards compatible)",
     "action": "Edit src/core/config.ts: (1) Add new OPTIONAL fields to RepoConfig interface (lines 11-17): sshUrl?: string (e.g. 'git@github.com:user/repo.git'), defaultBranch?: string (default 'main'), description?: string (context for Brain/prompts). Keep 'path' as REQUIRED - don't make it optional. (2) In normalizeRepoConfig() function, add defaulting: if defaultBranch is not set, default to 'main'. (3) In createTemplateConfig(), add a commented example showing the new sshUrl fields. All changes are backwards compatible - existing configs still work. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",

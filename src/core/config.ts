@@ -14,6 +14,9 @@ export interface RepoConfig {
   enabled: boolean;
   testCommand?: string; // Override default test command
   typecheckCommand?: string; // Override default typecheck command
+  sshUrl?: string; // SSH clone URL (e.g. 'git@github.com:user/repo.git')
+  defaultBranch?: string; // Default branch for cloning (default: 'main')
+  description?: string; // Context for Brain/prompts about this repo
 }
 
 export interface ConsciousnessUserConfig {
@@ -156,6 +159,10 @@ export async function createTemplateConfig(): Promise<void> {
         path: '/path/to/your/project',
         name: 'my-project',
         enabled: true,
+        // SSH-based workspace fields (optional):
+        // sshUrl: 'git@github.com:user/repo.git',
+        // defaultBranch: 'main',
+        // description: 'Brief context for Brain/prompts',
       },
     ],
     defaults: {
@@ -215,6 +222,9 @@ function normalizeRepoConfig(repo: Partial<RepoConfig>, index: number): RepoConf
     enabled: repo.enabled !== false,
     testCommand: repo.testCommand,
     typecheckCommand: repo.typecheckCommand,
+    sshUrl: repo.sshUrl,
+    defaultBranch: repo.defaultBranch || 'main',
+    description: repo.description,
   };
 }
 
