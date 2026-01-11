@@ -54,3 +54,13 @@ Max iterations: 20
 [2026-01-11 21:51:00] EDIT: Added WorkspaceManager import; added stale workspace cleanup in start() before loading modules; added codeagent workspace cleanup in stop() after stopping modules
 [2026-01-11 21:51:10] BUILD: npm run build started
 [2026-01-11 21:51:15] BUILD_PASS: build succeeded
+[2026-01-11 21:51:30] COMMIT: ralph: feature - Add workspace cleanup on Darwin startup and shutdown
+[2026-01-11 21:51:35] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:51:35] TASK_COMPLETE: Add workspace cleanup on Darwin startup and shutdown
+[2026-01-11 21:52:08] ITERATION 7: Starting with claude
+[2026-01-11 21:52:10] BRANCH: Confirmed on branch ralph/20260111-214036
+[2026-01-11 21:52:15] EVALUATE: Chose [docs] - Update CLAUDE.md with workspace workflow documentation because it is the only remaining task with passes:false, all feature tasks are complete, and this documents the newly implemented SSH workspace functionality
+[2026-01-11 21:52:20] READ: CLAUDE.md - understood structure, need to add new section after Architecture
+[2026-01-11 21:52:30] EDIT: Added '## SSH Workspace Workflow' section after Architecture section with: config.json example showing sshUrl/defaultBranch/description fields, 'task <repo>' REPL command usage, workspace location (~/.darwin/workspaces/), cleanup behavior (auto-delete after PR/task, startup stale cleanup), error handling
+[2026-01-11 21:52:35] BUILD: npm run build started
+[2026-01-11 21:52:40] BUILD_PASS: build succeeded

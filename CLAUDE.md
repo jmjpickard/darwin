@@ -51,6 +51,67 @@ Darwin coordinates:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## SSH Workspace Workflow
+
+Darwin supports SSH-based repository tasks that clone repos into temporary workspaces, execute task scripts, and automatically clean up.
+
+### Configuration
+
+Add SSH repos to your `~/.darwin/config.json`:
+
+```json
+{
+  "repos": [
+    {
+      "name": "my-project",
+      "path": "/path/to/local/repo",
+      "sshUrl": "git@github.com:user/my-project.git",
+      "defaultBranch": "main",
+      "description": "My project for overnight tasks"
+    }
+  ]
+}
+```
+
+- `path` (required): Local path for backwards compatibility
+- `sshUrl` (optional): SSH clone URL for workspace-based tasks
+- `defaultBranch` (optional): Branch to clone (defaults to "main")
+- `description` (optional): Context for Brain/prompts
+
+### REPL Command
+
+Use the `task` command to trigger SSH-based tasks:
+
+```bash
+> task my-project
+```
+
+This will:
+1. Clone the repo via SSH into a temporary workspace
+2. Look for a `ralph.sh` script in the repo root
+3. Execute the script if found
+4. Clean up the workspace after completion
+
+### Workspace Location
+
+Workspaces are created in `~/.darwin/workspaces/` with the naming pattern:
+```
+~/.darwin/workspaces/{repo-name}-{timestamp}/
+```
+
+### Cleanup Behavior
+
+Workspaces are automatically cleaned up:
+- **After task completion**: Workspace is deleted when the task finishes (success or failure)
+- **On Darwin shutdown**: All active workspaces are cleaned up via `stop()`
+- **On Darwin startup**: Stale workspaces from previous crashes are cleaned up via `cleanupStale()`
+
+### Error Handling
+
+- If `sshUrl` is not configured for a repo, the task command will fail with a helpful error
+- If `ralph.sh` is not found in the repo, the task will report this and clean up
+- Network/SSH failures during clone will be logged and the workspace cleaned up
+
 ## Current File Structure
 
 ```

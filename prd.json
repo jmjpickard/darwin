@@ -39,6 +39,6 @@
     "category": "docs",
     "description": "Update CLAUDE.md with workspace workflow documentation",
     "action": "Edit CLAUDE.md: Add a new section '## SSH Workspace Workflow' after the Architecture section documenting: (1) How to configure repos with sshUrl in config.json (show example with sshUrl, defaultBranch, description), (2) The 'task <repo>' REPL command and what it does, (3) Where workspaces are created (~/.darwin/workspaces/), (4) Cleanup behavior (auto-delete after PR/task completion), (5) Error handling (stale cleanup on startup). Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   }
 ]
