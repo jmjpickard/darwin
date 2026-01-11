@@ -3,7 +3,7 @@
     "category": "feature",
     "description": "Create WorkspaceManager class for temporary repo workspaces",
     "action": "Create new file src/core/workspace-manager.ts with: (1) Workspace interface { id: string, workDir: string, repoName: string, sshUrl: string, createdAt: Date, status: 'creating'|'ready'|'in_use'|'cleaning' }, (2) WorkspaceManager class with methods: ensureWorkspacesDir() - creates ~/.darwin/workspaces/, create(repoName, sshUrl, defaultBranch?) - generates ID as repoName-timestamp, creates directory, runs 'git clone --depth 1 --branch defaultBranch sshUrl workDir', returns Workspace with status 'ready', cleanup(workspace) - rm -rf the workspace directory, cleanupAll() - removes all workspaces in the directory, cleanupStale() - scans and deletes any leftover workspaces (for startup), getActive() - returns current workspace or null. Export WorkspaceManager and Workspace from the file. This is a standalone new file with no breaking changes. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",
