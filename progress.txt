@@ -40,3 +40,17 @@ Max iterations: 20
 [2026-01-11 21:46:45] PUSH: pushed to remote branch ralph/20260111-214036
 [2026-01-11 21:46:45] TASK_COMPLETE: Add SSH-based task execution to code-agent with workspace lifecycle
 [2026-01-11 21:47:40] ITERATION 5: Starting with claude
+[2026-01-11 21:49:50] EVALUATE: Chose [feature] - Add 'task' command to REPL for SSH-based repo tasks because it is a feature that depends on code_start_ssh_task tool (now complete), is simpler than darwin.ts cleanup, and adds user-facing functionality
+[2026-01-11 21:49:50] READ: src/cli/repl.ts - understood command handling structure in handleInput function
+[2026-01-11 21:49:50] EDIT: Added 'task <repo>' command handler, handleTaskCommand function, and updated help text
+[2026-01-11 21:49:50] BUILD: npm run build started
+[2026-01-11 21:49:50] BUILD_PASS: build succeeded
+[2026-01-11 21:49:50] COMMIT: ralph: feature - Add 'task' command to REPL for SSH-based repo tasks
+[2026-01-11 21:49:50] PUSH: pushed to remote branch ralph/20260111-214036
+[2026-01-11 21:49:50] TASK_COMPLETE: Add 'task' command to REPL for SSH-based repo tasks
+[2026-01-11 21:49:55] ITERATION 6: Starting with claude
+[2026-01-11 21:50:30] EVALUATE: Chose [feature] - Add workspace cleanup on Darwin startup and shutdown because it is a feature task (higher priority than docs), all dependencies are done (WorkspaceManager exists and is exported), and the docs task should document working functionality
+[2026-01-11 21:50:40] READ: src/core/darwin.ts - understood structure with start() and stop() methods
+[2026-01-11 21:51:00] EDIT: Added WorkspaceManager import; added stale workspace cleanup in start() before loading modules; added codeagent workspace cleanup in stop() after stopping modules
+[2026-01-11 21:51:10] BUILD: npm run build started
+[2026-01-11 21:51:15] BUILD_PASS: build succeeded

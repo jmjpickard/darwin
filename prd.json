@@ -33,7 +33,7 @@
     "category": "feature",
     "description": "Add workspace cleanup on Darwin startup and shutdown",
     "action": "Edit src/core/darwin.ts: (1) In the stop() method, after stopping modules, add: const codeAgentModule = this.modules.get('codeagent'); if (codeAgentModule) { try { await codeAgentModule.workspaceManager?.cleanupAll(); } catch (e) { this.logger.warn('Workspace cleanup failed', e); } }. (2) In the start() method, early in initialization (before loading modules), add cleanup of stale workspaces: const WorkspaceManager = await import('./workspace-manager.js'); const wm = new WorkspaceManager.WorkspaceManager(); await wm.cleanupStale(); This ensures no orphan workspaces remain after crash or normal shutdown. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "docs",

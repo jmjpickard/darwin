@@ -24,6 +24,7 @@ import { Consciousness, ConsciousnessConfig } from './consciousness.js';
 import { SubAgentManager } from './sub-agents.js';
 import { OpenRouterClient } from '../integrations/openrouter.js';
 import { WebSearch } from '../integrations/web-search.js';
+import { WorkspaceManager } from './workspace-manager.js';
 
 const execAsync = promisify(exec);
 
@@ -318,6 +319,15 @@ export class Darwin {
     this.logger.info('Starting Darwin...');
     this.monologue.act('Waking up...');
 
+    // Clean up any stale workspaces from previous runs/crashes
+    try {
+      const wm = new WorkspaceManager();
+      await wm.cleanupStale();
+      this.logger.debug('Cleaned up stale workspaces');
+    } catch (e) {
+      this.logger.warn('Stale workspace cleanup failed', e);
+    }
+
     if (this.brain.getProvider() === 'ollama') {
       const model = this.brain.getModel();
       this.monologue.act(`Ensuring model ${model} is available...`);
@@ -388,6 +398,18 @@ export class Darwin {
     this.consciousness.stop();
 
     await this.modules.stopAll();
+
+    // Clean up any active workspaces from codeagent module
+    const codeAgentModule = this.modules.get('codeagent');
+    if (codeAgentModule && 'workspaceManager' in codeAgentModule) {
+      try {
+        await (codeAgentModule as { workspaceManager?: WorkspaceManager }).workspaceManager?.cleanupAll();
+        this.logger.debug('Cleaned up codeagent workspaces');
+      } catch (e) {
+        this.logger.warn('Workspace cleanup failed', e);
+      }
+    }
+
     await this.brain.shutdown();
 
     this.eventBus.publish('darwin', 'stopped', {});
