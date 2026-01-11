@@ -70,6 +70,8 @@ Log these events:
   - BUILD_PASS: build succeeded
   - BUILD_FAIL: build failed with specific error
   - COMMIT: commit message
+  - PUSH: pushed to remote branch
+  - PR_CREATED: pull request URL
   - TASK_COMPLETE: task finished successfully
   - TASK_FAIL: task failed with reason
   - STUCK: cannot proceed, reason
@@ -86,6 +88,7 @@ TASK:
 6. If build passes:
    - Update prd.json to set passes:true for this item
    - Commit all changes with message: "ralph: [category] - [description]"
+   - Push the commit to the remote branch
    - Log: "[timestamp] TASK_COMPLETE: [description]"
    - Output: <done>description</done>
 7. If build fails:
@@ -94,7 +97,16 @@ TASK:
    - DO NOT try to fix it, just stop
 
 If ALL items in prd.json have passes:true:
+  - Push all commits to the remote branch
+  - Create a Pull Request using: gh pr create --base main --head '"$BRANCH_NAME"'
+    - Title: "Ralph: PRD Implementation [date]"
+    - Body should include:
+      1. Summary of what was accomplished
+      2. List of all completed tasks from prd.json (category and description)
+      3. Any notable implementation decisions or changes
+      4. Files changed summary
   - Log: "[timestamp] ALL_COMPLETE: All PRD items passed"
+  - Log: "[timestamp] PR_CREATED: <PR URL>"
   - Output: <complete/>'
 
 run_with_agent() {

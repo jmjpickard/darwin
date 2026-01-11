@@ -1,5 +1,6 @@
 [
   {
+<<<<<<< Updated upstream
     "category": "cleanup",
     "description": "Delete terminal infrastructure files",
     "action": "Run: rm -f src/core/terminal-controller.ts src/core/terminal-types.ts src/core/terminal-proxy.ts src/core/terminal-proxy-protocol.ts src/core/terminal-pty-helper.ts src/core/progress-manager.ts src/core/status-manager.ts src/cli/terminald.ts src/cli/test-terminal.ts src/cli/test-enter.ts src/cli/test-submit.ts src/tests/prd-manager.test.ts src/tests/progress-manager.test.ts",
@@ -34,5 +35,101 @@
     "description": "Rewrite code-agent.ts as simple ralph.sh spawner",
     "action": "First run: cp src/modules/code-agent.ts src/modules/code-agent.ts.bak\nThen replace entire contents of src/modules/code-agent.ts with:\nimport { spawn, ChildProcess } from 'child_process';\nimport { DarwinModule, ModuleConfig } from '../core/module.js';\nimport { DarwinBrain } from '../core/brain.js';\n\ninterface CodeAgentConfig extends ModuleConfig {\n  repos?: Array<{ path: string; name: string }>;\n}\n\nexport class CodeAgentModule extends DarwinModule {\n  readonly name = 'code-agent';\n  readonly description = 'Spawns ralph.sh for PRD execution';\n\n  private ralphProcess: ChildProcess | null = null;\n  private outputBuffer: string[] = [];\n  private outputHandlers = new Set<(line: string) => void>();\n  private pauseCheck: (() => boolean) | null = null;\n  protected config: CodeAgentConfig;\n\n  constructor(brain: DarwinBrain, config: ModuleConfig) {\n    super(brain, config);\n    this.config = config as CodeAgentConfig;\n  }\n\n  async init(): Promise<void> {\n    this.registerTool(\n      'start_prd',\n      'Start ralph.sh to work through PRD items',\n      { type: 'object', properties: { maxIterations: { type: 'number' } }, required: [] },\n      async (args) => this.startRalph(args.maxIterations as number | undefined)\n    );\n    this.registerTool(\n      'get_status',\n      'Get ralph.sh status and recent output',\n      { type: 'object', properties: {}, required: [] },\n      async () => this.getStatus()\n    );\n    this.registerTool(\n      'stop_prd',\n      'Stop ralph.sh process',\n      { type: 'object', properties: {}, required: [] },\n      async () => this.stopRalph()\n    );\n    this.registerTool(\n      'list_repos',\n      'List configured repositories',\n      { type: 'object', properties: {}, required: [] },\n      async () => ({ repos: this.config.repos || [] })\n    );\n    this._healthy = true;\n  }\n\n  async start(): Promise<void> {\n    this._status = 'running';\n  }\n\n  async stop(): Promise<void> {\n    this.stopRalph();\n    this._status = 'stopped';\n  }\n\n  // Methods required by repl.ts\n  setPauseCheck(fn: () => boolean): void {\n    this.pauseCheck = fn;\n  }\n\n  getCurrentSession(): { taskId: string } | null {\n    return this.ralphProcess ? { taskId: 'ralph' } : null;\n  }\n\n  getOutputBuffer(): string[] {\n    return [...this.outputBuffer];\n  }\n\n  onOutput(handler: (line: string) => void): void {\n    this.outputHandlers.add(handler);\n  }\n\n  offOutput(handler: (line: string) => void): void {\n    this.outputHandlers.delete(handler);\n  }\n\n  private startRalph(maxIterations?: number): { started: boolean; cwd: string } | { error: string } {\n    if (this.ralphProcess) {\n      return { error: 'Ralph is already running' };\n    }\n\n    const cwd = this.config.repos?.[0]?.path || process.cwd();\n    const args = maxIterations ? [String(maxIterations)] : [];\n\n    this.ralphProcess = spawn('./ralph.sh', args, { cwd, shell: true });\n    this.outputBuffer = [];\n\n    this.ralphProcess.stdout?.on('data', (data: Buffer) => {\n      const line = data.toString();\n      this.outputBuffer.push(line);\n      this.outputHandlers.forEach((h) => h(line));\n    });\n\n    this.ralphProcess.stderr?.on('data', (data: Buffer) => {\n      const line = data.toString();\n      this.outputBuffer.push(line);\n      this.outputHandlers.forEach((h) => h(line));\n    });\n\n    this.ralphProcess.on('close', () => {\n      this.ralphProcess = null;\n    });\n\n    return { started: true, cwd };\n  }\n\n  private getStatus(): { running: boolean; buffer: string[] } {\n    return {\n      running: !!this.ralphProcess,\n      buffer: this.outputBuffer.slice(-20),\n    };\n  }\n\n  private stopRalph(): { stopped: boolean; reason?: string } {\n    if (this.ralphProcess) {\n      this.ralphProcess.kill();\n      this.ralphProcess = null;\n      return { stopped: true };\n    }\n    return { stopped: false, reason: 'not running' };\n  }\n}",
     "passes": true
+=======
+    "category": "config",
+    "description": "Extend RepoConfig interface with SSH URL support",
+    "action": "Edit src/core/config.ts: Update the RepoConfig interface (lines 11-17) to add optional fields: sshUrl (string, e.g. 'git@github.com:user/repo.git'), defaultBranch (string, default 'main'), description (string, context for Brain/prompts). Make 'path' optional since SSH-based repos won't have it. Make 'name' required (currently optional). Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "config",
+    "description": "Update normalizeRepoConfig to validate SSH repos",
+    "action": "Edit src/core/config.ts: Modify normalizeRepoConfig() function (lines 207-219) to: (1) Allow path to be undefined if sshUrl is provided, (2) Require at least one of path or sshUrl to be set, (3) Default name from sshUrl by extracting repo name (e.g. 'git@github.com:user/synapse.git' -> 'synapse'), (4) Default defaultBranch to 'main' if not provided. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "config",
+    "description": "Update createTemplateConfig with SSH example",
+    "action": "Edit src/core/config.ts: Update createTemplateConfig() function (lines 150-202) to include an example repo with sshUrl in the template, showing both legacy path-based and new SSH-based config patterns. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Create WorkspaceManager class",
+    "action": "Create new file src/core/workspace-manager.ts with: (1) Workspace interface with id, workDir, repo, createdAt, status fields, (2) WorkspaceManager class with methods: ensureWorkspacesDir(), create(repo), getEffectivePath(repo), cleanup(workspace), cleanupAll(), getActive(). Workspaces stored in ~/.darwin/workspaces/. The create() method should: generate ID as repoName-timestamp, create directory, run 'git clone --depth 1 --branch defaultBranch sshUrl .', return workspace with status 'ready'. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Export WorkspaceManager from index.ts",
+    "action": "Edit src/index.ts: Add export for WorkspaceManager and Workspace type from ./core/workspace-manager.js. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Add WorkspaceManager to CodeAgentModule",
+    "action": "Edit src/modules/code-agent.ts: (1) Add import for WorkspaceManager and Workspace from ../core/workspace-manager.js, (2) Add class properties: private workspaceManager: WorkspaceManager and private currentWorkspace: Workspace | null = null, (3) Initialize workspaceManager in constructor. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Add getRepoPath helper method",
+    "action": "Edit src/modules/code-agent.ts: Add a private helper method getRepoPath(repo: RepoConfig): string that returns this.currentWorkspace.workDir if currentWorkspace matches the repo name, otherwise returns repo.path. This abstracts the path resolution for both legacy and workspace-based repos. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "refactor",
+    "description": "Update execAsync calls to use getRepoPath",
+    "action": "Edit src/modules/code-agent.ts: Find all occurrences of { cwd: repo.path } in execAsync calls and replace with { cwd: this.getRepoPath(repo) }. Key locations include: getCurrentCommitSha, commit/push operations, rollback on failure, all branch operations (createBranch, getCurrentBranch, etc), and validation commands. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Create workspace before task execution for SSH repos",
+    "action": "Edit src/modules/code-agent.ts: In the startTaskInternal() method (around line 1551), before the createBranch call, add logic to create a workspace if the repo has sshUrl but no path: if (repo.sshUrl && !repo.path) { this.currentWorkspace = await this.workspaceManager.create(repo); this.logger.info(`Created workspace: ${this.currentWorkspace.workDir}`); }. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Cleanup workspace after task completion",
+    "action": "Edit src/modules/code-agent.ts: In handleTaskComplete() and handleTaskFailed() methods, add cleanup logic: if (this.currentWorkspace) { await this.workspaceManager.cleanup(this.currentWorkspace); this.currentWorkspace = null; }. This ensures workspaces are deleted after PR is created or task fails. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Register code_start_repo_task tool",
+    "action": "Edit src/modules/code-agent.ts: In the registerTools() method, add a new tool 'code_start_repo_task' with parameter repo (string). The handler should: (1) Find repo by name from config, (2) Return error if not found or no sshUrl, (3) Create workspace via workspaceManager.create(), (4) Check if ralph.sh exists in workspace, (5) Execute 'bash ralph.sh' in workspace directory, (6) Cleanup workspace on completion, (7) Return success with repo name. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Add task command to REPL",
+    "action": "Edit src/cli/repl.ts: Add a new case 'task' in the command handler switch statement. It should: (1) Parse repo name from command (parts[1]), (2) Show usage if no repo provided, (3) Get code agent module from darwin, (4) Call the code_start_repo_task tool with the repo name, (5) Log the result. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Add workspace cleanup on Darwin shutdown",
+    "action": "Edit src/core/darwin.ts: In the stop() method, add logic to cleanup any active workspaces by accessing the code agent module's workspaceManager and calling cleanupAll(). This ensures no orphan workspaces remain after shutdown. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Add stale workspace cleanup on Darwin startup",
+    "action": "Edit src/core/darwin.ts or WorkspaceManager: Add logic to scan ~/.darwin/workspaces/ on startup and delete any stale workspace directories (from previous crashed runs). Can be implemented as cleanupStale() method in WorkspaceManager called during Darwin init. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "docs",
+    "description": "Update CLAUDE.md with workspace workflow",
+    "action": "Edit CLAUDE.md: Add a new section documenting the temporary workspace workflow: (1) How to configure repos with sshUrl, (2) The 'task <repo>' REPL command, (3) Where workspaces are created (~/.darwin/workspaces/), (4) Cleanup behavior (auto-delete after PR), (5) Error handling and manual cleanup. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+  },
+  {
+    "category": "test",
+    "description": "Verify workspace workflow end-to-end",
+    "action": "Manual test: (1) Add a test repo config with sshUrl to ~/.darwin/config.json, (2) Start Darwin, (3) Run 'task <repo-name>' in REPL, (4) Verify workspace created in ~/.darwin/workspaces/, (5) Verify ralph.sh runs, (6) Verify workspace deleted after completion. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
+    "passes": false
+>>>>>>> Stashed changes
   }
 ]
