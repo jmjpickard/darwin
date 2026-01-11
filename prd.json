@@ -21,7 +21,7 @@
     "category": "feature",
     "description": "Create WorkspaceManager class",
     "action": "Create new file src/core/workspace-manager.ts with: (1) Workspace interface with id, workDir, repo, createdAt, status fields, (2) WorkspaceManager class with methods: ensureWorkspacesDir(), create(repo), getEffectivePath(repo), cleanup(workspace), cleanupAll(), getActive(). Workspaces stored in ~/.darwin/workspaces/. The create() method should: generate ID as repoName-timestamp, create directory, run 'git clone --depth 1 --branch defaultBranch sshUrl .', return workspace with status 'ready'. Reference plan: ~/.claude/plans/encapsulated-riding-llama.md",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",
