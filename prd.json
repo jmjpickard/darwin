@@ -27,7 +27,7 @@
     "category": "feature",
     "description": "Add 'task' command to REPL for SSH-based repo tasks",
     "action": "Edit src/cli/repl.ts: Add new case 'task' in the command handler switch statement. Parse repo name from parts[1]. If no repo name provided, show 'Usage: task <repo-name>'. Get the code agent module via darwin.getModule('codeagent'). Call the code_start_ssh_task tool handler with { repo: repoName }. Log the result. This adds a new REPL command for triggering SSH-based tasks.",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",
