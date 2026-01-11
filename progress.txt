@@ -1,1 +1,2 @@
-<>
+# Ralph Progress Log
+# Previous run failed - PRD has been rewritten with more explicit instructions

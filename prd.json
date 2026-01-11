@@ -1,20 +1,38 @@
 [
   {
-    "category": "feature",
-    "description": "Rewrite code-agent to spawn ralph.sh for PRD execution",
-    "action": "Backup src/modules/code-agent.ts to src/modules/code-agent.ts.bak. Rewrite code-agent.ts with 4 tools: start_prd (spawns ralph.sh in a repo directory), get_status (returns current PRD progress), stop_prd (kills running ralph process), list_repos (lists configured repos from config).",
-    "passes": false
-  },
-  {
-    "category": "refactor",
-    "description": "Simplify PRD system to flat action/passes structure",
-    "action": "Update src/core/prd-types.ts to export only a flat PrdItem interface with fields: action (string), passes (boolean). Update src/core/prd-manager.ts to only have load(), exists(), getItems() methods that work with the new flat structure. Remove unused types and helpers.",
+    "category": "cleanup",
+    "description": "Delete terminal infrastructure files",
+    "action": "Run: rm -f src/core/terminal-controller.ts src/core/terminal-types.ts src/core/terminal-proxy.ts src/core/terminal-proxy-protocol.ts src/core/terminal-pty-helper.ts src/core/progress-manager.ts src/core/status-manager.ts src/cli/terminald.ts src/cli/test-terminal.ts src/cli/test-enter.ts src/cli/test-submit.ts src/tests/prd-manager.test.ts src/tests/progress-manager.test.ts",
     "passes": false
   },
   {
     "category": "cleanup",
-    "description": "Remove all terminal infrastructure and update references so the build passes",
-    "action": "Delete src/core/terminal-controller.ts, src/core/terminal-types.ts, src/core/terminal-proxy.ts, src/core/terminal-proxy-protocol.ts, src/core/terminal-pty-helper.ts, src/core/progress-manager.ts, src/cli/terminald.ts, src/cli/test-terminal.ts, src/cli/test-enter.ts, src/cli/test-submit.ts. Then update src/core/darwin.ts, src/core/config.ts, and src/cli/repl.ts to remove all imports and references to deleted modules. Keep repl commands: start, status, stop, attach, help, quit.",
+    "description": "Remove terminal imports from brain.ts",
+    "action": "Edit src/core/brain.ts and delete the line containing: import type { TerminalObservation, TerminalAction, TerminalActionType } from './terminal-types.js';",
+    "passes": false
+  },
+  {
+    "category": "cleanup",
+    "description": "Remove terminal exports from index.ts",
+    "action": "Edit src/index.ts and remove these lines: (1) export { TerminalController } from './core/terminal-controller.js'; (2) export { DEFAULT_PATTERNS, DANGEROUS_PATTERNS, containsDangerousPattern } from './core/terminal-types.js'; (3) the entire export type block for TerminalBackend, TerminalState, TerminalAction, TerminalActionType, TerminalObservation, TerminalControllerConfig, TerminalPatterns, TerminalEvents, ActionResult from './core/terminal-types.js'",
+    "passes": false
+  },
+  {
+    "category": "refactor",
+    "description": "Simplify prd-types.ts to flat structure",
+    "action": "Replace entire contents of src/core/prd-types.ts with:\nexport interface PrdItem {\n  category: string;\n  description: string;\n  action: string;\n  passes: boolean;\n}",
+    "passes": false
+  },
+  {
+    "category": "refactor",
+    "description": "Simplify prd-manager.ts to match flat structure",
+    "action": "Replace entire contents of src/core/prd-manager.ts with:\nimport { readFileSync, existsSync } from 'fs';\nimport { join } from 'path';\nimport { PrdItem } from './prd-types.js';\n\nexport class PrdManager {\n  private repoPath: string;\n\n  constructor(repoPath: string) {\n    this.repoPath = repoPath;\n  }\n\n  exists(): boolean {\n    return existsSync(join(this.repoPath, 'prd.json'));\n  }\n\n  load(): PrdItem[] {\n    const content = readFileSync(join(this.repoPath, 'prd.json'), 'utf-8');\n    return JSON.parse(content) as PrdItem[];\n  }\n\n  getItems(): PrdItem[] {\n    return this.load();\n  }\n}",
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "Rewrite code-agent.ts as simple ralph.sh spawner",
+    "action": "First run: cp src/modules/code-agent.ts src/modules/code-agent.ts.bak\nThen replace entire contents of src/modules/code-agent.ts with:\nimport { spawn, ChildProcess } from 'child_process';\nimport { DarwinModule, ModuleConfig } from '../core/module.js';\nimport { DarwinBrain } from '../core/brain.js';\n\ninterface CodeAgentConfig extends ModuleConfig {\n  repos?: Array<{ path: string; name: string }>;\n}\n\nexport class CodeAgentModule extends DarwinModule {\n  readonly name = 'code-agent';\n  readonly description = 'Spawns ralph.sh for PRD execution';\n\n  private ralphProcess: ChildProcess | null = null;\n  private outputBuffer: string[] = [];\n  private outputHandlers = new Set<(line: string) => void>();\n  private pauseCheck: (() => boolean) | null = null;\n  protected config: CodeAgentConfig;\n\n  constructor(brain: DarwinBrain, config: ModuleConfig) {\n    super(brain, config);\n    this.config = config as CodeAgentConfig;\n  }\n\n  async init(): Promise<void> {\n    this.registerTool(\n      'start_prd',\n      'Start ralph.sh to work through PRD items',\n      { type: 'object', properties: { maxIterations: { type: 'number' } }, required: [] },\n      async (args) => this.startRalph(args.maxIterations as number | undefined)\n    );\n    this.registerTool(\n      'get_status',\n      'Get ralph.sh status and recent output',\n      { type: 'object', properties: {}, required: [] },\n      async () => this.getStatus()\n    );\n    this.registerTool(\n      'stop_prd',\n      'Stop ralph.sh process',\n      { type: 'object', properties: {}, required: [] },\n      async () => this.stopRalph()\n    );\n    this.registerTool(\n      'list_repos',\n      'List configured repositories',\n      { type: 'object', properties: {}, required: [] },\n      async () => ({ repos: this.config.repos || [] })\n    );\n    this._healthy = true;\n  }\n\n  async start(): Promise<void> {\n    this._status = 'running';\n  }\n\n  async stop(): Promise<void> {\n    this.stopRalph();\n    this._status = 'stopped';\n  }\n\n  // Methods required by repl.ts\n  setPauseCheck(fn: () => boolean): void {\n    this.pauseCheck = fn;\n  }\n\n  getCurrentSession(): { taskId: string } | null {\n    return this.ralphProcess ? { taskId: 'ralph' } : null;\n  }\n\n  getOutputBuffer(): string[] {\n    return [...this.outputBuffer];\n  }\n\n  onOutput(handler: (line: string) => void): void {\n    this.outputHandlers.add(handler);\n  }\n\n  offOutput(handler: (line: string) => void): void {\n    this.outputHandlers.delete(handler);\n  }\n\n  private startRalph(maxIterations?: number): { started: boolean; cwd: string } | { error: string } {\n    if (this.ralphProcess) {\n      return { error: 'Ralph is already running' };\n    }\n\n    const cwd = this.config.repos?.[0]?.path || process.cwd();\n    const args = maxIterations ? [String(maxIterations)] : [];\n\n    this.ralphProcess = spawn('./ralph.sh', args, { cwd, shell: true });\n    this.outputBuffer = [];\n\n    this.ralphProcess.stdout?.on('data', (data: Buffer) => {\n      const line = data.toString();\n      this.outputBuffer.push(line);\n      this.outputHandlers.forEach((h) => h(line));\n    });\n\n    this.ralphProcess.stderr?.on('data', (data: Buffer) => {\n      const line = data.toString();\n      this.outputBuffer.push(line);\n      this.outputHandlers.forEach((h) => h(line));\n    });\n\n    this.ralphProcess.on('close', () => {\n      this.ralphProcess = null;\n    });\n\n    return { started: true, cwd };\n  }\n\n  private getStatus(): { running: boolean; buffer: string[] } {\n    return {\n      running: !!this.ralphProcess,\n      buffer: this.outputBuffer.slice(-20),\n    };\n  }\n\n  private stopRalph(): { stopped: boolean; reason?: string } {\n    if (this.ralphProcess) {\n      this.ralphProcess.kill();\n      this.ralphProcess = null;\n      return { stopped: true };\n    }\n    return { stopped: false, reason: 'not running' };\n  }\n}",
     "passes": false
   }
 ]
