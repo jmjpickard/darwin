@@ -3,31 +3,31 @@
     "category": "cleanup",
     "description": "Delete terminal infrastructure files",
     "action": "Run: rm -f src/core/terminal-controller.ts src/core/terminal-types.ts src/core/terminal-proxy.ts src/core/terminal-proxy-protocol.ts src/core/terminal-pty-helper.ts src/core/progress-manager.ts src/core/status-manager.ts src/cli/terminald.ts src/cli/test-terminal.ts src/cli/test-enter.ts src/cli/test-submit.ts src/tests/prd-manager.test.ts src/tests/progress-manager.test.ts",
-    "passes": false
+    "passes": true
   },
   {
     "category": "cleanup",
     "description": "Remove terminal imports from brain.ts",
     "action": "Edit src/core/brain.ts and delete the line containing: import type { TerminalObservation, TerminalAction, TerminalActionType } from './terminal-types.js';",
-    "passes": false
+    "passes": true
   },
   {
     "category": "cleanup",
     "description": "Remove terminal exports from index.ts",
     "action": "Edit src/index.ts and remove these lines: (1) export { TerminalController } from './core/terminal-controller.js'; (2) export { DEFAULT_PATTERNS, DANGEROUS_PATTERNS, containsDangerousPattern } from './core/terminal-types.js'; (3) the entire export type block for TerminalBackend, TerminalState, TerminalAction, TerminalActionType, TerminalObservation, TerminalControllerConfig, TerminalPatterns, TerminalEvents, ActionResult from './core/terminal-types.js'",
-    "passes": false
+    "passes": true
   },
   {
     "category": "refactor",
     "description": "Simplify prd-types.ts to flat structure",
     "action": "Replace entire contents of src/core/prd-types.ts with:\nexport interface PrdItem {\n  category: string;\n  description: string;\n  action: string;\n  passes: boolean;\n}",
-    "passes": false
+    "passes": true
   },
   {
     "category": "refactor",
     "description": "Simplify prd-manager.ts to match flat structure",
     "action": "Replace entire contents of src/core/prd-manager.ts with:\nimport { readFileSync, existsSync } from 'fs';\nimport { join } from 'path';\nimport { PrdItem } from './prd-types.js';\n\nexport class PrdManager {\n  private repoPath: string;\n\n  constructor(repoPath: string) {\n    this.repoPath = repoPath;\n  }\n\n  exists(): boolean {\n    return existsSync(join(this.repoPath, 'prd.json'));\n  }\n\n  load(): PrdItem[] {\n    const content = readFileSync(join(this.repoPath, 'prd.json'), 'utf-8');\n    return JSON.parse(content) as PrdItem[];\n  }\n\n  getItems(): PrdItem[] {\n    return this.load();\n  }\n}",
-    "passes": false
+    "passes": true
   },
   {
     "category": "feature",
