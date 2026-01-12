@@ -1,5 +1,7 @@
 {
   "permissions": {
+    "additionalDirectories": ["/home/jmjpickard/.darwin/workspaces/"],
+    "defaultMode": "acceptEdits",
     "allow": [
       "Bash(cat:*)",
       "Bash(ls:*)",
