@@ -528,6 +528,16 @@ export class Darwin {
   }
 
   /**
+   * Chat with Darwin with streaming - tokens are sent to callback as they arrive
+   */
+  async chatStreaming(
+    message: string,
+    onToken: (token: string) => void
+  ): Promise<import('./brain.js').ChatResponse> {
+    return this.brain.chatStreaming(message, onToken);
+  }
+
+  /**
    * Clear conversation history
    */
   clearChat(): void {

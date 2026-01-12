@@ -123,8 +123,8 @@ const DEFAULT_CONFIG: BrainConfig = {
 
 const DEFAULT_OPENROUTER_CONFIG = {
   baseUrl: 'https://openrouter.ai/api/v1',
-  timeout: 120_000,
-  maxTokens: 4096,
+  timeout: 300_000, // 5 minutes for long responses
+  maxTokens: 16384, // Allow much longer responses
   temperature: 0.7,
 };
 
@@ -425,6 +425,221 @@ Be conversational, concise, and helpful. Ask clarifying questions when needed. T
     // Look for question patterns
     return /\?$/.test(text.trim()) ||
            /would you|should I|do you want|which|what would you|prefer|like me to/i.test(text);
+  }
+
+  /**
+   * Chat with streaming - streams tokens to the callback as they arrive
+   *
+   * Returns the full response when complete. The onToken callback receives
+   * each chunk of text as it streams in.
+   */
+  async chatStreaming(
+    userMessage: string,
+    onToken: (token: string) => void
+  ): Promise<ChatResponse> {
+    // Add user message to history
+    this.conversationHistory.push({
+      role: 'user',
+      content: userMessage,
+    });
+
+    this.trimHistory();
+    this.logger.debug(`Chat (streaming): ${userMessage.slice(0, 100)}...`);
+
+    try {
+      const messages: ChatMessage[] = [
+        { role: 'system', content: this.systemPrompt },
+        ...this.conversationHistory,
+      ];
+
+      const toolResults: Array<{ tool: string; result?: unknown; error?: string }> = [];
+      const maxToolRounds = 3;
+
+      for (let round = 0; round < maxToolRounds; round++) {
+        // First, check for tool calls (non-streaming)
+        const checkData = await this.requestChatCompletion(messages, {
+          tools: this.tools.length > 0 ? this.tools : undefined,
+        });
+
+        const toolCalls = checkData.message.tool_calls || [];
+
+        // If there are tool calls, handle them
+        if (toolCalls.length > 0) {
+          const assistantEntry: ChatMessage = {
+            role: 'assistant',
+            content: checkData.message.content || '',
+            tool_calls: toolCalls,
+          };
+
+          this.conversationHistory.push(assistantEntry);
+          messages.push(assistantEntry);
+          this.trimHistory();
+
+          // Execute tools
+          const toolResultMessages: ChatMessage[] = [];
+          for (const call of toolCalls) {
+            const result = await this.executeToolWithRecovery(
+              call.function.name,
+              call.function.arguments,
+              userMessage
+            );
+            toolResults.push(result);
+
+            const toolContent = result.error
+              ? `Tool ${result.tool} failed: ${result.error}`
+              : `Tool ${result.tool} returned: ${JSON.stringify(result.result, null, 2)}`;
+
+            const toolMessage: ChatMessage = {
+              role: 'tool',
+              content: toolContent,
+            };
+            if (call.id) {
+              toolMessage.tool_call_id = call.id;
+            }
+            toolResultMessages.push(toolMessage);
+          }
+
+          this.conversationHistory.push(...toolResultMessages);
+          messages.push(...toolResultMessages);
+          this.trimHistory();
+
+          // Continue loop to get final response
+          continue;
+        }
+
+        // No tool calls - stream the response
+        const fullResponse = await this.streamChatCompletion(messages, onToken);
+
+        const assistantEntry: ChatMessage = {
+          role: 'assistant',
+          content: fullResponse,
+        };
+        this.conversationHistory.push(assistantEntry);
+        this.trimHistory();
+
+        return {
+          message: fullResponse,
+          toolResults: toolResults.length > 0 ? toolResults : undefined,
+          isQuestion: this.detectQuestion(fullResponse),
+        };
+      }
+
+      return {
+        message: 'I hit the tool call limit while working on that. Try again or rephrase?',
+        toolResults: toolResults.length > 0 ? toolResults : undefined,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        this.logger.error('Chat timed out');
+        return { message: "Sorry, I took too long to respond. Could you try again?" };
+      }
+      this.logger.error('Chat failed:', error);
+      return { message: `Sorry, something went wrong: ${error}` };
+    }
+  }
+
+  /**
+   * Stream a chat completion from OpenRouter
+   */
+  private async streamChatCompletion(
+    messages: ChatMessage[],
+    onToken: (token: string) => void
+  ): Promise<string> {
+    if (this.config.provider !== 'openrouter') {
+      // Fallback to non-streaming for Ollama
+      const data = await this.requestChatCompletion(messages, {});
+      const content = data.message.content || '';
+      onToken(content);
+      return content;
+    }
+
+    const config = this.getOpenRouterConfig();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), config.timeout);
+
+    const outboundMessages = messages.map((message) => {
+      if (!message.tool_calls) {
+        return message;
+      }
+      const toolCalls = message.tool_calls.map((call) => ({
+        id: call.id,
+        type: 'function',
+        function: {
+          name: call.function.name,
+          arguments: JSON.stringify(call.function.arguments ?? {}),
+        },
+      }));
+      return { ...message, tool_calls: toolCalls };
+    });
+
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+        'HTTP-Referer': 'https://darwin.local',
+        'X-Title': 'Darwin Home Intelligence',
+      },
+      body: JSON.stringify({
+        model: this.getOpenRouterModel(),
+        messages: outboundMessages,
+        stream: true,
+        max_tokens: config.maxTokens,
+        temperature: config.temperature,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenRouter error ${response.status}: ${errorText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('No response body for streaming');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = '';
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE lines
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6).trim();
+            if (data === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta?.content;
+              if (delta) {
+                fullContent += delta;
+                onToken(delta);
+              }
+            } catch {
+              // Skip malformed JSON
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return fullContent || "I'm not sure how to help with that.";
   }
 
   /**

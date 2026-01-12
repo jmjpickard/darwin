@@ -565,17 +565,19 @@ async function showTasks(ctx: ReplContext, repoFilter?: string): Promise<void> {
 }
 
 /**
- * Handle natural language input via Brain's conversational chat
+ * Handle natural language input via Brain's conversational chat with streaming
  */
 async function handleNaturalLanguage(ctx: ReplContext, input: string): Promise<void> {
   console.log(''); // spacing
 
   try {
-    const response = await ctx.darwin.chat(input);
+    // Stream tokens directly to stdout as they arrive
+    await ctx.darwin.chatStreaming(input, (token) => {
+      process.stdout.write(token);
+    });
 
-    // Just print the conversational response
-    console.log(response.message);
-    console.log('');
+    // End with newlines after streaming completes
+    console.log('\n');
   } catch (error) {
     console.log(`Error: ${error}\n`);
   }
