@@ -5,6 +5,7 @@ Darwin can use a local Ollama model or OpenRouter for chat and tool calling
 for deep reasoning.
 
 Darwin coordinates:
+
 - Code Agent - Claude Code orchestration with Beads task management
 - Home Automation - Lights, heating, sensors (mock today, Zigbee later)
 - Proactive assistant loop - Consciousness ticks and a visible monologue
@@ -111,42 +112,7 @@ Running Darwin once will create a template config at `~/.darwin/config.json`:
 npm run start -- --auto
 ```
 
-Then edit the file and restart:
-
-```json
-{
-  "repos": [
-    {
-      "path": "/path/to/your/project",
-      "name": "my-project",
-      "enabled": true
-    }
-  ],
-  "defaults": {
-    "testCommand": "npm test",
-    "checkIntervalMs": 300000,
-    "maxSessionMinutes": 30,
-    "usageThreshold": 80
-  },
-  "brain": {
-    "provider": "ollama",
-    "model": "llama3.2:1b",
-    "timeoutMs": 60000
-  },
-  "consciousness": {
-    "tickIntervalMs": 30000,
-    "idleThinkingEnabled": true
-  },
-  "openrouter": {
-    "apiKey": "sk-or-...",
-    "defaultModel": "deepseek/deepseek-r1"
-  },
-  "webSearch": {
-    "enabled": true,
-    "maxResults": 5
-  }
-}
-```
+Then edit the file and restart. See [Configuration Reference](#configuration-reference) below for full details.
 
 ### 7. Run Darwin
 
@@ -212,9 +178,165 @@ The REPL streams Darwin's monologue while you type. Built-in commands:
 - `think_deep` (OpenRouter, optional)
 - `research` (OpenRouter, optional)
 
-## Configuration
+## Configuration Reference
 
-### Environment variables
+Darwin is configured via `~/.darwin/config.json`. Running Darwin for the first time creates a template.
+
+### Full Example
+
+```json
+{
+  "repos": [
+    {
+      "path": "/path/to/your/project",
+      "name": "my-project",
+      "enabled": true,
+      "testCommand": "npm test",
+      "typecheckCommand": "npm run build",
+      "sshUrl": "git@github.com:user/my-project.git",
+      "defaultBranch": "main",
+      "description": "My project for overnight tasks"
+    }
+  ],
+  "defaults": {
+    "testCommand": "npm test",
+    "typecheckCommand": "npm run build",
+    "checkIntervalMs": 300000,
+    "maxSessionMinutes": 30,
+    "usageThreshold": 80
+  },
+  "brain": {
+    "provider": "ollama",
+    "model": "llama3.2:1b",
+    "timeoutMs": 60000
+  },
+  "consciousness": {
+    "tickIntervalMs": 30000,
+    "idleThinkingEnabled": true
+  },
+  "openrouter": {
+    "apiKey": "sk-or-...",
+    "defaultModel": "deepseek/deepseek-r1"
+  },
+  "webSearch": {
+    "enabled": true,
+    "maxResults": 5
+  },
+  "codeAgent": {
+    "agent": "claude",
+    "agentCommands": {
+      "claude": { "command": "claude", "args": [] },
+      "codex": { "command": "codex", "args": [] }
+    }
+  },
+  "gitSync": {
+    "enabled": false,
+    "intervalMs": 300000,
+    "prdReposOnly": true,
+    "autoStash": false
+  }
+}
+```
+
+### repos
+
+Array of repositories Darwin can work with.
+
+| Field              | Type    | Required | Default         | Description                                                                   |
+| ------------------ | ------- | -------- | --------------- | ----------------------------------------------------------------------------- |
+| `path`             | string  | Yes      | -               | Local filesystem path to the repo                                             |
+| `name`             | string  | No       | directory name  | Display name for the repo                                                     |
+| `enabled`          | boolean | No       | `true`          | Whether Darwin should work with this repo                                     |
+| `testCommand`      | string  | No       | from `defaults` | Command to run tests                                                          |
+| `typecheckCommand` | string  | No       | from `defaults` | Command to run type checking                                                  |
+| `sshUrl`           | string  | No       | -               | SSH clone URL for workspace-based tasks (e.g. `git@github.com:user/repo.git`) |
+| `defaultBranch`    | string  | No       | `"main"`        | Branch to clone when using SSH workspaces                                     |
+| `description`      | string  | No       | -               | Context about the repo for Brain/prompts                                      |
+
+### defaults
+
+Default values used across all repos unless overridden.
+
+| Field               | Type   | Default           | Description                          |
+| ------------------- | ------ | ----------------- | ------------------------------------ |
+| `testCommand`       | string | `"npm test"`      | Default test command                 |
+| `typecheckCommand`  | string | `"npm run build"` | Default typecheck command            |
+| `checkIntervalMs`   | number | `300000` (5 min)  | How often to check for new tasks     |
+| `maxSessionMinutes` | number | `30`              | Max time for a single coding session |
+| `usageThreshold`    | number | `80`              | Usage percentage to trigger warnings |
+
+### brain
+
+Configure the AI brain provider and model.
+
+| Field       | Type                         | Default         | Description                      |
+| ----------- | ---------------------------- | --------------- | -------------------------------- |
+| `provider`  | `"ollama"` \| `"openrouter"` | `"ollama"`      | Which provider to use            |
+| `model`     | string                       | `"llama3.2:1b"` | Model name for the provider      |
+| `timeoutMs` | number                       | `60000`         | Timeout for brain requests in ms |
+
+### consciousness
+
+Configure the proactive thinking loop.
+
+| Field                 | Type    | Default | Description                                  |
+| --------------------- | ------- | ------- | -------------------------------------------- |
+| `tickIntervalMs`      | number  | `30000` | How often Darwin "thinks" in ms              |
+| `idleThinkingEnabled` | boolean | `true`  | Emit idle thoughts when nothing is happening |
+
+### openrouter
+
+OpenRouter configuration for remote model access (DeepSeek R1, etc).
+
+| Field          | Type   | Default                  | Description                                         |
+| -------------- | ------ | ------------------------ | --------------------------------------------------- |
+| `apiKey`       | string | -                        | Your OpenRouter API key                             |
+| `defaultModel` | string | `"deepseek/deepseek-r1"` | Default model for `think_deep` and `research` tools |
+
+### webSearch
+
+DuckDuckGo web search configuration.
+
+| Field        | Type    | Default | Description                |
+| ------------ | ------- | ------- | -------------------------- |
+| `enabled`    | boolean | `true`  | Enable web search tools    |
+| `maxResults` | number  | `5`     | Maximum results per search |
+
+### codeAgent
+
+Configure the code agent backend (Claude Code or Codex).
+
+| Field           | Type                    | Default    | Description                       |
+| --------------- | ----------------------- | ---------- | --------------------------------- |
+| `agent`         | `"claude"` \| `"codex"` | `"claude"` | Which agent backend to use        |
+| `agentCommands` | object                  | -          | Override CLI commands (see below) |
+
+**agentCommands** allows you to customize the CLI commands:
+
+```json
+{
+  "agentCommands": {
+    "claude": {
+      "command": "claude",
+      "args": ["--dangerously-skip-permissions"]
+    },
+    "codex": { "command": "/custom/path/codex", "args": [] }
+  }
+}
+```
+
+### gitSync
+
+Automatic git pull for repositories.
+
+| Field          | Type    | Default          | Description                          |
+| -------------- | ------- | ---------------- | ------------------------------------ |
+| `enabled`      | boolean | `false`          | Enable automatic git pulls           |
+| `intervalMs`   | number  | `300000` (5 min) | Interval between pulls               |
+| `prdReposOnly` | boolean | `true`           | Only sync repos that have `prd.json` |
+| `autoStash`    | boolean | `false`          | Auto-stash local changes before pull |
+
+### Environment Variables
 
 ```bash
 DARWIN_CONFIG_DIR=~/.darwin
@@ -224,24 +346,6 @@ DARWIN_TERMINAL_PROXY_TOKEN=
 DARWIN_TERMINAL_PROXY_TIMEOUT_MS=5000
 DARWIN_TERMINAL_PROXY_SANITIZE_ENV=0
 DARWIN_TERMINAL_PROXY_MINIMAL_ENV=0
-```
-
-### Brain provider
-
-Configure the brain provider and model in `~/.darwin/config.json`:
-
-```json
-{
-  "brain": {
-    "provider": "openrouter",
-    "model": "deepseek/deepseek-r1",
-    "timeoutMs": 120000
-  },
-  "openrouter": {
-    "apiKey": "sk-or-...",
-    "defaultModel": "deepseek/deepseek-r1"
-  }
-}
 ```
 
 ### Terminal Proxy (Sandboxed Environments)
@@ -288,6 +392,7 @@ npm run test:brain
 ## Privacy
 
 Everything runs locally by default:
+
 - No cloud dependencies required
 - Data stays on your hardware
 - Optional OpenRouter usage is opt-in
