@@ -38,32 +38,41 @@ export class CodeAgentModule extends DarwinModule {
   async init(): Promise<void> {
     this.registerTool(
       'start_prd',
-      'Start ralph.sh to work through PRD items',
-      { type: 'object', properties: { maxIterations: { type: 'number' } }, required: [] },
+      'Start ralph.sh in the FIRST local repo (legacy mode). For specific repos, use code_start_ssh_task instead.',
+      { type: 'object', properties: { maxIterations: { type: 'number', description: 'Max iterations to run' } }, required: [] },
       async (args) => this.startRalph(args.maxIterations as number | undefined)
     );
     this.registerTool(
       'get_status',
-      'Get ralph.sh status and recent output',
+      'Check if ralph.sh is running and get recent output',
       { type: 'object', properties: {}, required: [] },
       async () => this.getStatus()
     );
     this.registerTool(
       'stop_prd',
-      'Stop ralph.sh process',
+      'Stop the currently running ralph.sh process',
       { type: 'object', properties: {}, required: [] },
       async () => this.stopRalph()
     );
     this.registerTool(
       'list_repos',
-      'List configured repositories',
+      'List all configured repositories with their names and SSH URLs',
       { type: 'object', properties: {}, required: [] },
       async () => ({ repos: this.config.repos || [] })
     );
     this.registerTool(
       'code_start_ssh_task',
-      'Clone a repo via SSH and run ralph.sh in it',
-      { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'] },
+      'Start work on a specific repository. Clones via SSH to a temp workspace and runs ralph.sh. Use this when the user mentions a repo name.',
+      {
+        type: 'object',
+        properties: {
+          repo: {
+            type: 'string',
+            description: 'The repository name (e.g. "synapse", "darwin"). Must match a configured repo name.'
+          }
+        },
+        required: ['repo']
+      },
       async (args) => this.startSshTask(args.repo as string)
     );
     this._healthy = true;

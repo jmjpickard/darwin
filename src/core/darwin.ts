@@ -115,6 +115,16 @@ export class Darwin {
     }
 
     this.brain = new DarwinBrain(brainConfig);
+
+    // Give the Brain context about configured repos
+    const repos = this.config.userConfig?.repos || [];
+    this.brain.setRepoContext(repos.map(r => ({
+      name: r.name || r.path,
+      description: r.description,
+      sshUrl: r.sshUrl,
+      enabled: r.enabled,
+    })));
+
     this.modules = new ModuleLoader(this.brain);
     this.eventBus = eventBus;
     this.subAgents = new SubAgentManager(this.monologue);

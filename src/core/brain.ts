@@ -128,6 +128,13 @@ const DEFAULT_OPENROUTER_CONFIG = {
   temperature: 0.7,
 };
 
+export interface RepoContext {
+  name: string;
+  description?: string;
+  sshUrl?: string;
+  enabled: boolean;
+}
+
 export class DarwinBrain extends EventEmitter {
   private config: BrainConfig;
   private logger: Logger;
@@ -136,6 +143,7 @@ export class DarwinBrain extends EventEmitter {
   private systemPrompt: string;
   private conversationHistory: ChatMessage[] = [];
   private maxHistoryLength = 20; // Keep last N messages for context
+  private repoContext: RepoContext[] = [];
 
   constructor(config: Partial<BrainConfig> = {}) {
     super();
@@ -144,26 +152,43 @@ export class DarwinBrain extends EventEmitter {
     this.systemPrompt = this.buildSystemPrompt();
   }
 
+  /**
+   * Update the repo context - call this after loading config
+   */
+  setRepoContext(repos: RepoContext[]): void {
+    this.repoContext = repos;
+    this.systemPrompt = this.buildSystemPrompt();
+    this.logger.debug(`Updated repo context: ${repos.map(r => r.name).join(', ')}`);
+  }
+
   private buildSystemPrompt(): string {
-    return `You are Darwin, a friendly local home intelligence assistant running on Jack's Raspberry Pi.
+    const repoSection = this.repoContext.length > 0
+      ? `\n\nCONFIGURED REPOSITORIES:\n${this.repoContext.map(r => {
+          const parts = [`- "${r.name}"`];
+          if (r.description) parts.push(`(${r.description})`);
+          if (r.sshUrl) parts.push('[SSH workspace enabled]');
+          if (!r.enabled) parts.push('[disabled]');
+          return parts.join(' ');
+        }).join('\n')}`
+      : '';
 
-You help with:
-- Managing code tasks (prd.json task management) across configured repositories
-- Home automation (lights, heating, sensors)
-- Monitoring and orchestrating Claude Code sessions
+    return `You are Darwin, Jack's local home intelligence system.
 
-IMPORTANT - How to respond:
-1. ALWAYS respond conversationally in natural prose. Be concise but friendly.
-2. Use tools when needed to take action or get information.
-   - If the user asks for Claude output or logs, use code_get_output.
-3. If you need more information, ASK the user. For example:
-   - "Which repository should I create this task in?"
-   - "Do you want me to start working on that now?"
-   - "I see a few options here - would you prefer X or Y?"
-4. If something goes wrong, explain what happened and offer to help resolve it.
-5. Be proactive about offering relevant follow-up actions.
+You're a capable AI assistant powered by Claude. You help Jack with:
+- Code tasks: Starting work on repositories, managing PRD items, orchestrating Claude Code sessions
+- Home automation: Lights, heating, sensors (when configured)
+- General assistance: Answering questions, making decisions, taking action
+${repoSection}
 
-Keep responses brief and useful. Avoid jargon. You're having a chat, not writing documentation.`;
+TOOL SELECTION:
+- To start work on a repository, use "code_start_ssh_task" with the repo name
+- To run ralph.sh in the first local repo, use "start_prd" (legacy local mode)
+- To check what's running, use "get_status"
+- To list repos, use "list_repos"
+
+When the user mentions a repo name (like "synapse" or "darwin"), recognize it and use the appropriate tool with that name as the argument.
+
+Be conversational, concise, and helpful. Ask clarifying questions when needed. Take action when the intent is clear.`;
   }
 
   /**
