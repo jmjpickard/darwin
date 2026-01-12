@@ -8,17 +8,19 @@
  * Just start typing to talk to Darwin.
  *
  * Built-in commands:
- *   help     - Show available commands
- *   status   - What's Darwin doing right now?
- *   tasks    - Show ready tasks
- *   pause    - Stop picking up new tasks
- *   resume   - Resume picking up tasks
- *   attach   - Watch live Claude output (Ctrl+C to detach)
- *   thoughts - Show recent thoughts
- *   logs     - Recent activity events
- *   clear    - Start fresh conversation
- *   quit     - Exit Darwin
- *   /brain   - Show or update brain provider/model (requires restart)
+ *   help        - Show available commands
+ *   status      - What's Darwin doing right now?
+ *   task-status - Show detailed Ralph task status (ts for short)
+ *   tasks       - Show ready tasks
+ *   task <repo> - Start SSH-based task for a repo
+ *   pause       - Stop picking up new tasks
+ *   resume      - Resume picking up tasks
+ *   attach      - Watch live Claude output (Ctrl+C to detach)
+ *   thoughts    - Show recent thoughts
+ *   logs        - Recent activity events
+ *   clear       - Start fresh conversation
+ *   quit        - Exit Darwin
+ *   /brain      - Show or update brain provider/model (requires restart)
  *
  * Or just chat naturally - Darwin understands natural language.
  */
@@ -30,6 +32,7 @@ import { CodeAgentModule } from '../modules/code-agent.js';
 import { eventBus } from '../core/event-bus.js';
 import type { Thought } from '../core/monologue.js';
 import { getConfigPath, loadConfig } from '../core/config.js';
+import { getTaskTracker } from '../core/task-tracker.js';
 
 type ReplMode = 'normal' | 'attached';
 
@@ -192,6 +195,11 @@ async function handleInput(ctx: ReplContext, input: string): Promise<void> {
     return;
   }
 
+  if (lower === 'task-status' || lower === 'ts' || lower === 'taskstatus') {
+    showTaskStatus();
+    return;
+  }
+
   if (lower === 'thoughts') {
     showThoughts(ctx);
     return;
@@ -265,26 +273,75 @@ function showHelp(): void {
 ${DIM}Darwin's thoughts stream above. Just type to chat.${RESET}
 
 Commands:
-  status       - What's Darwin doing right now?
-  tasks        - Show ready tasks
+  ${BOLD}Task Management${RESET}
   task <repo>  - Start SSH-based task for a repo
+  task-status  - Show detailed task status (alias: ts)
+  attach       - Watch live task output (Ctrl+C to detach)
+  tasks        - Show ready tasks from Beads
+
+  ${BOLD}Darwin Control${RESET}
+  status       - What's Darwin doing right now?
   thoughts     - Show recent thoughts
+  logs         - Recent activity events
   pause        - Stop picking up new tasks
   resume       - Resume picking up tasks
-  attach       - Watch live Claude output (Ctrl+C to detach)
-  logs         - Recent activity events
+
+  ${BOLD}Settings${RESET}
   mute/unmute  - Toggle monologue stream
   clear        - Start fresh conversation
+  /brain       - Show or update brain provider/model
   quit         - Exit Darwin
-  /brain       - Show or update brain provider/model (restart required)
-  /model       - Set brain model (restart required)
-  /provider    - Set brain provider (restart required)
 
 Or just chat naturally:
   "create a new task for fixing the login bug"
-  "research the best approach for implementing X"
   "what are you thinking about?"
 `);
+}
+
+const BOLD = '\x1b[1m';
+
+/**
+ * Show detailed task status
+ */
+function showTaskStatus(): void {
+  const tracker = getTaskTracker();
+  const formatted = tracker.formatStatus();
+  console.log(formatted);
+
+  // Also show task history if no current task
+  if (!tracker.getCurrentTask()) {
+    const history = tracker.getHistory(5);
+    if (history.length > 0) {
+      console.log(`${DIM}Recent tasks:${RESET}`);
+      for (const task of history.slice().reverse()) {
+        const duration = task.completedAt
+          ? formatDurationMs(task.completedAt.getTime() - task.startedAt.getTime())
+          : '?';
+        const status = task.phase === 'completed' ? '\u{2705}' : '\u{274C}';
+        const time = task.startedAt.toLocaleTimeString('en-GB', {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        console.log(`  ${status} ${time} ${task.repoName} (${duration})`);
+      }
+      console.log('');
+    }
+  }
+}
+
+/**
+ * Format milliseconds as human-readable duration
+ */
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const remainingSecs = secs % 60;
+  if (mins < 60) return `${mins}m ${remainingSecs}s`;
+  const hours = Math.floor(mins / 60);
+  const remainingMins = mins % 60;
+  return `${hours}h ${remainingMins}m`;
 }
 
 /**
@@ -423,8 +480,24 @@ async function updateBrainConfig(update: { provider?: 'ollama' | 'openrouter'; m
 async function showStatus(ctx: ReplContext): Promise<void> {
   const consciousness = ctx.darwin.getConsciousness();
   const state = consciousness.getState();
+  const tracker = getTaskTracker();
 
-  console.log(`\n${DIM}Consciousness:${RESET} ${state}`);
+  console.log('');
+  console.log(`${BOLD}Darwin Status${RESET}`);
+  console.log(`${'─'.repeat(40)}`);
+  console.log(`${DIM}Consciousness:${RESET} ${state}`);
+  console.log(`${DIM}Paused:${RESET} ${ctx.darwin.isPaused() ? 'Yes' : 'No'}`);
+
+  // Show task status if there's an active task
+  const currentTask = tracker.getCurrentTask();
+  if (currentTask) {
+    console.log('');
+    console.log(tracker.formatCompact());
+  } else {
+    console.log(`${DIM}Active task:${RESET} None`);
+  }
+
+  console.log(`${'─'.repeat(40)}`);
 
   // Also ask Darwin for a conversational status
   const response = await ctx.darwin.chat('What are you currently working on? Give me a quick status update.');
@@ -587,18 +660,51 @@ async function handleNaturalLanguage(ctx: ReplContext, input: string): Promise<v
  * Handle 'task <repo-name>' command for SSH-based repo tasks
  */
 async function handleTaskCommand(ctx: ReplContext, repoName: string): Promise<void> {
-  console.log(`Starting SSH task for repo: ${repoName}...`);
+  const tracker = getTaskTracker();
+
+  console.log('');
+  console.log(`${BOLD}Starting task: ${repoName}${RESET}`);
+  console.log(`${'─'.repeat(40)}`);
+  console.log(`${DIM}Use 'ts' for status, 'attach' for live output${RESET}`);
+  console.log('');
+
+  // Subscribe to tracker updates for this task
+  const onUpdate = (data: { event: string; task: { phase: string; repoName: string } }) => {
+    const { event, task } = data;
+    if (task.repoName === repoName) {
+      // Show phase transitions
+      if (event === 'cloning') {
+        process.stdout.write(`\r${DIM}[cloning]${RESET} Cloning repository via SSH...`);
+      } else if (event === 'starting') {
+        process.stdout.write(`\r${DIM}[starting]${RESET} Clone complete, starting ralph.sh\n`);
+      } else if (event === 'running') {
+        console.log(`${DIM}[running]${RESET} ralph.sh is executing`);
+        console.log(`${DIM}Tip: Use 'attach' to watch output, 'ts' for status${RESET}\n`);
+      }
+    }
+  };
+
+  tracker.on('update', onUpdate);
 
   try {
     // Call the code_start_ssh_task tool via the Brain
     const result = await ctx.darwin.getBrain().callTool('code_start_ssh_task', { repo: repoName });
+
+    // Clean up listener
+    tracker.off('update', onUpdate);
+
     if (result.error) {
-      console.log(`Error: ${result.error}`);
+      console.log(`\n${'\x1b[31m'}Error: ${result.error}${RESET}\n`);
     } else {
-      console.log(JSON.stringify(result.result, null, 2));
+      const res = result.result as { success: boolean; message: string };
+      if (res.success) {
+        console.log(`${'\x1b[32m'}${res.message}${RESET}\n`);
+      } else {
+        console.log(`${'\x1b[31m'}${res.message}${RESET}\n`);
+      }
     }
-    console.log('');
   } catch (error) {
-    console.log(`Error starting task: ${error}\n`);
+    tracker.off('update', onUpdate);
+    console.log(`\n${'\x1b[31m'}Error starting task: ${error}${RESET}\n`);
   }
 }
