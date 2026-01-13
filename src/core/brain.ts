@@ -145,6 +145,13 @@ export class DarwinBrain extends EventEmitter {
   private maxHistoryLength = 20; // Keep last N messages for context
   private repoContext: RepoContext[] = [];
 
+  /** Whether the brain is currently in an active chat session */
+  private _isChatting = false;
+  /** Timestamp when chatting started (for timeout detection) */
+  private _chattingStartedAt: number | null = null;
+  /** Max time a chat can be active before auto-releasing (5 minutes) */
+  private static readonly CHAT_TIMEOUT_MS = 5 * 60 * 1000;
+
   constructor(config: Partial<BrainConfig> = {}) {
     super();
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -331,17 +338,19 @@ Be conversational, concise, and helpful. Ask clarifying questions when needed. T
    * and always returns a conversational response.
    */
   async chat(userMessage: string): Promise<ChatResponse> {
-    // Add user message to history
-    this.conversationHistory.push({
-      role: 'user',
-      content: userMessage,
-    });
-
-    this.trimHistory();
-
-    this.logger.debug(`Chat: ${userMessage.slice(0, 100)}...`);
+    this.startChatting();
 
     try {
+      // Add user message to history
+      this.conversationHistory.push({
+        role: 'user',
+        content: userMessage,
+      });
+
+      this.trimHistory();
+
+      this.logger.debug(`Chat: ${userMessage.slice(0, 100)}...`);
+
       const messages: ChatMessage[] = [
         { role: 'system', content: this.systemPrompt },
         ...this.conversationHistory,
@@ -415,6 +424,8 @@ Be conversational, concise, and helpful. Ask clarifying questions when needed. T
       }
       this.logger.error('Chat failed:', error);
       return { message: `Sorry, something went wrong: ${error}` };
+    } finally {
+      this.stopChatting();
     }
   }
 
@@ -437,16 +448,18 @@ Be conversational, concise, and helpful. Ask clarifying questions when needed. T
     userMessage: string,
     onToken: (token: string) => void
   ): Promise<ChatResponse> {
-    // Add user message to history
-    this.conversationHistory.push({
-      role: 'user',
-      content: userMessage,
-    });
-
-    this.trimHistory();
-    this.logger.debug(`Chat (streaming): ${userMessage.slice(0, 100)}...`);
+    this.startChatting();
 
     try {
+      // Add user message to history
+      this.conversationHistory.push({
+        role: 'user',
+        content: userMessage,
+      });
+
+      this.trimHistory();
+      this.logger.debug(`Chat (streaming): ${userMessage.slice(0, 100)}...`);
+
       const messages: ChatMessage[] = [
         { role: 'system', content: this.systemPrompt },
         ...this.conversationHistory,
@@ -535,6 +548,8 @@ Be conversational, concise, and helpful. Ask clarifying questions when needed. T
       }
       this.logger.error('Chat failed:', error);
       return { message: `Sorry, something went wrong: ${error}` };
+    } finally {
+      this.stopChatting();
     }
   }
 
@@ -1287,6 +1302,43 @@ REASON: <brief explanation>`;
    */
   getConfig(): Readonly<BrainConfig> {
     return { ...this.config };
+  }
+
+  /**
+   * Check if the brain is currently in an active chat session.
+   * Used by Consciousness to avoid interfering with user conversations.
+   */
+  isChatting(): boolean {
+    // Check for timeout - auto-release if chat has been active too long
+    if (this._isChatting && this._chattingStartedAt) {
+      const elapsed = Date.now() - this._chattingStartedAt;
+      if (elapsed > DarwinBrain.CHAT_TIMEOUT_MS) {
+        this.logger.warn(`Chat timeout after ${elapsed}ms, auto-releasing chatting state`);
+        this._isChatting = false;
+        this._chattingStartedAt = null;
+      }
+    }
+    return this._isChatting;
+  }
+
+  /**
+   * Mark the brain as entering a chat session.
+   * Called internally by chat() and chatStreaming().
+   */
+  private startChatting(): void {
+    this._isChatting = true;
+    this._chattingStartedAt = Date.now();
+    this.logger.debug('Started chatting');
+  }
+
+  /**
+   * Mark the brain as exiting a chat session.
+   * Called internally by chat() and chatStreaming().
+   */
+  private stopChatting(): void {
+    this._isChatting = false;
+    this._chattingStartedAt = null;
+    this.logger.debug('Stopped chatting');
   }
 
   /**

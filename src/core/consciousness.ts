@@ -157,6 +157,14 @@ export class Consciousness {
   private async tick(): Promise<void> {
     if (this.state === 'stopped') return;
 
+    // Skip tick if brain is actively chatting with user
+    // This prevents consciousness from interfering with conversations
+    // and corrupting the conversation history with tool_result messages
+    if (this.brain.isChatting()) {
+      this.logger.debug('Skipping tick - brain is chatting');
+      return;
+    }
+
     this.state = 'thinking';
 
     try {
