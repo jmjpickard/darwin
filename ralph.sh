@@ -118,8 +118,8 @@ run_with_agent() {
     case "$agent" in
         claude)
             # Use timeout to limit cost (no --max-turns flag exists, rely on prompt instructions)
-            # --dangerously-skip-permissions allows autonomous operation without approval prompts
-            result=$(timeout $TIMEOUT_SECONDS claude --print --dangerously-skip-permissions -p "$PROMPT" 2>&1) || exit_code=$?
+            # --allowedTools pre-approves tools for headless operation (no prompts)
+            result=$(timeout $TIMEOUT_SECONDS claude --print --allowedTools "Bash,Read,Edit,Write,Glob,Grep,WebFetch" -p "$PROMPT" 2>&1) || exit_code=$?
             ;;
         codex)
             result=$(timeout $TIMEOUT_SECONDS codex --full-auto "$PROMPT" 2>&1) || exit_code=$?

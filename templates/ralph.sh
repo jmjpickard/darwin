@@ -55,7 +55,8 @@ while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     echo ""
 
     # Run Claude Code
-    RESULT=$(claude --print -p "@prd.json @progress.txt
+    # --allowedTools pre-approves tools for headless operation (no prompts)
+    RESULT=$(claude --print --allowedTools "Bash,Read,Edit,Write,Glob,Grep,WebFetch" -p "@prd.json @progress.txt
 Pick ONE item with passes:false. Implement it. Run tests/typecheck.
 If passes, update prd.json to set passes:true. Commit with a clear message.
 If ALL items pass, output: <promise>COMPLETE</promise>
