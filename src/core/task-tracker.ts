@@ -5,9 +5,13 @@
  *   pending → cloning → running → completed/failed
  *
  * Emits events for UI updates and integrates with the monologue system.
+ * Persists task logs to ~/.darwin/task-logs/ for post-mortem investigation.
  */
 
 import { EventEmitter } from 'events';
+import { existsSync, mkdirSync, appendFileSync, writeFileSync, readFileSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 import { eventBus } from './event-bus.js';
 import { getMonologue } from './monologue.js';
 
@@ -25,6 +29,7 @@ export interface TaskInfo {
   sshUrl: string;
   phase: TaskPhase;
   workDir?: string;
+  logFile?: string;  // Path to persisted task log
   startedAt: Date;
   cloneStartedAt?: Date;
   cloneCompletedAt?: Date;
@@ -34,6 +39,7 @@ export interface TaskInfo {
   exitCode?: number;
   outputLines: number;
   lastOutput?: string;
+  preserveWorkspace?: boolean;  // Don't cleanup on failure for investigation
 }
 
 export interface TaskSummary {
@@ -85,21 +91,57 @@ export class TaskTracker extends EventEmitter {
   private currentTask: TaskInfo | null = null;
   private taskHistory: TaskInfo[] = [];
   private monologue = getMonologue();
+  private logsDir: string;
+  private outputBuffer: string[] = [];  // Buffer for writing to log file
+
+  constructor() {
+    super();
+    this.logsDir = join(homedir(), '.darwin', 'task-logs');
+    this.ensureLogsDir();
+  }
+
+  /**
+   * Ensure logs directory exists
+   */
+  private ensureLogsDir(): void {
+    if (!existsSync(this.logsDir)) {
+      mkdirSync(this.logsDir, { recursive: true });
+    }
+  }
 
   /**
    * Start tracking a new task
    */
   startTask(repoName: string, sshUrl: string): TaskInfo {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const logFile = join(this.logsDir, `${repoName}-${timestamp}.log`);
+
     const task: TaskInfo = {
       id: `task-${repoName}-${Date.now()}`,
       repoName,
       sshUrl,
       phase: 'pending',
+      logFile,
       startedAt: new Date(),
       outputLines: 0,
+      preserveWorkspace: false,  // Will be set to true on failure
     };
 
     this.currentTask = task;
+    this.outputBuffer = [];
+
+    // Write initial log header
+    const header = [
+      `# Task Log: ${repoName}`,
+      `Started: ${task.startedAt.toISOString()}`,
+      `SSH URL: ${sshUrl}`,
+      `Task ID: ${task.id}`,
+      '',
+      '--- Output ---',
+      '',
+    ].join('\n');
+    writeFileSync(logFile, header);
+
     this.emitUpdate('started', task);
     this.monologue.act(`Starting task for ${repoName}`, { taskId: task.id });
 
@@ -166,9 +208,29 @@ export class TaskTracker extends EventEmitter {
     this.currentTask.outputLines++;
     this.currentTask.lastOutput = line.trim().slice(0, 100);
 
+    // Buffer output and write periodically to avoid too many disk writes
+    this.outputBuffer.push(line);
+    if (this.outputBuffer.length >= 10) {
+      this.flushOutput();
+    }
+
     // Emit less frequently to avoid flooding
     if (this.currentTask.outputLines % 10 === 0) {
       this.emitUpdate('output', this.currentTask);
+    }
+  }
+
+  /**
+   * Flush buffered output to log file
+   */
+  private flushOutput(): void {
+    if (!this.currentTask?.logFile || this.outputBuffer.length === 0) return;
+
+    try {
+      appendFileSync(this.currentTask.logFile, this.outputBuffer.join(''));
+      this.outputBuffer = [];
+    } catch {
+      // Ignore write errors - log is best-effort
     }
   }
 
@@ -183,6 +245,26 @@ export class TaskTracker extends EventEmitter {
     this.currentTask.exitCode = exitCode;
 
     const duration = Date.now() - this.currentTask.startedAt.getTime();
+
+    // Flush any remaining output to log
+    this.flushOutput();
+
+    // Write completion summary to log
+    if (this.currentTask.logFile) {
+      const summary = [
+        '',
+        '--- Task Completed ---',
+        `Completed: ${this.currentTask.completedAt.toISOString()}`,
+        `Duration: ${formatDuration(duration)}`,
+        `Exit Code: ${exitCode}`,
+        `Output Lines: ${this.currentTask.outputLines}`,
+      ].join('\n');
+      try {
+        appendFileSync(this.currentTask.logFile, summary);
+      } catch {
+        // Ignore write errors
+      }
+    }
 
     this.emitUpdate('completed', this.currentTask);
     this.monologue.result(
@@ -203,13 +285,38 @@ export class TaskTracker extends EventEmitter {
     this.currentTask.completedAt = new Date();
     this.currentTask.error = error;
     this.currentTask.exitCode = exitCode;
+    this.currentTask.preserveWorkspace = true;  // Keep workspace for investigation
 
     const duration = Date.now() - this.currentTask.startedAt.getTime();
+
+    // Flush any remaining output to log
+    this.flushOutput();
+
+    // Write failure summary to log
+    if (this.currentTask.logFile) {
+      const summary = [
+        '',
+        '--- Task Failed ---',
+        `Completed: ${this.currentTask.completedAt.toISOString()}`,
+        `Duration: ${formatDuration(duration)}`,
+        `Exit Code: ${exitCode ?? 'unknown'}`,
+        `Error: ${error}`,
+        `Workspace: ${this.currentTask.workDir || 'unknown'}`,
+        '',
+        'NOTE: Workspace preserved for investigation.',
+        `Log file: ${this.currentTask.logFile}`,
+      ].join('\n');
+      try {
+        appendFileSync(this.currentTask.logFile, summary);
+      } catch {
+        // Ignore write errors
+      }
+    }
 
     this.emitUpdate('failed', this.currentTask);
     this.monologue.alert(
       `Task ${this.currentTask.repoName} failed: ${error} (after ${formatDuration(duration)})`,
-      { taskId: this.currentTask.id, error, exitCode }
+      { taskId: this.currentTask.id, error, exitCode, logFile: this.currentTask.logFile }
     );
 
     this.archiveTask();
@@ -339,8 +446,98 @@ export class TaskTracker extends EventEmitter {
       repoName: task.repoName,
       phase: task.phase,
       workDir: task.workDir,
+      logFile: task.logFile,
       error: task.error,
     });
+  }
+
+  /**
+   * Get the last failed task (for investigation)
+   */
+  getLastFailedTask(): TaskInfo | null {
+    for (let i = this.taskHistory.length - 1; i >= 0; i--) {
+      if (this.taskHistory[i].phase === 'failed') {
+        return this.taskHistory[i];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get the logs directory path
+   */
+  getLogsDir(): string {
+    return this.logsDir;
+  }
+
+  /**
+   * Read a task's log file
+   */
+  readTaskLog(taskId: string): { content: string; path: string } | { error: string } {
+    // Check current task
+    if (this.currentTask?.id === taskId && this.currentTask.logFile) {
+      try {
+        const content = readFileSync(this.currentTask.logFile, 'utf-8');
+        return { content, path: this.currentTask.logFile };
+      } catch (e) {
+        return { error: `Failed to read log: ${e}` };
+      }
+    }
+
+    // Check history
+    const historyTask = this.taskHistory.find(t => t.id === taskId);
+    if (historyTask?.logFile) {
+      try {
+        const content = readFileSync(historyTask.logFile, 'utf-8');
+        return { content, path: historyTask.logFile };
+      } catch (e) {
+        return { error: `Failed to read log: ${e}` };
+      }
+    }
+
+    return { error: `Task ${taskId} not found or has no log` };
+  }
+
+  /**
+   * Get investigation info for the most recent failed task
+   * Returns paths to check and useful diagnostic info
+   */
+  getInvestigationInfo(): {
+    taskId: string;
+    repoName: string;
+    workDir?: string;
+    logFile?: string;
+    error?: string;
+    suggestedPaths: string[];
+    suggestedCommands: string[];
+  } | null {
+    const task = this.getLastFailedTask();
+    if (!task) return null;
+
+    const suggestedPaths: string[] = [];
+    const suggestedCommands: string[] = [];
+
+    if (task.logFile) {
+      suggestedPaths.push(task.logFile);
+    }
+
+    if (task.workDir) {
+      suggestedPaths.push(join(task.workDir, 'progress.txt'));
+      suggestedPaths.push(join(task.workDir, 'prd.json'));
+      suggestedCommands.push(`git -C "${task.workDir}" log --oneline -10`);
+      suggestedCommands.push(`git -C "${task.workDir}" status`);
+      suggestedCommands.push(`ls -la "${task.workDir}"`);
+    }
+
+    return {
+      taskId: task.id,
+      repoName: task.repoName,
+      workDir: task.workDir,
+      logFile: task.logFile,
+      error: task.error,
+      suggestedPaths,
+      suggestedCommands,
+    };
   }
 }
 

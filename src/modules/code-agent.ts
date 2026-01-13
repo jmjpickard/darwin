@@ -176,13 +176,15 @@ export class CodeAgentModule extends DarwinModule {
           // Mark task completion/failure
           if (code === 0) {
             this.taskTracker.complete(code);
+            // Only cleanup workspace on SUCCESS - preserve on failure for investigation
+            if (this.currentWorkspace) {
+              await this.workspaceManager.cleanup(this.currentWorkspace);
+              this.currentWorkspace = null;
+            }
           } else {
             this.taskTracker.fail(`Process exited with code ${code}`, code ?? undefined);
-          }
-
-          // Cleanup workspace on completion
-          if (this.currentWorkspace) {
-            await this.workspaceManager.cleanup(this.currentWorkspace);
+            // DON'T cleanup on failure - keep workspace for Darwin to investigate
+            // Workspace path is preserved in the task tracker
             this.currentWorkspace = null;
           }
 
@@ -196,11 +198,8 @@ export class CodeAgentModule extends DarwinModule {
         proc.on('error', async (err) => {
           this.ralphProcess = null;
           this.taskTracker.fail(`Process error: ${err.message}`);
-
-          if (this.currentWorkspace) {
-            await this.workspaceManager.cleanup(this.currentWorkspace);
-            this.currentWorkspace = null;
-          }
+          // DON'T cleanup on error - keep workspace for investigation
+          this.currentWorkspace = null;
 
           resolve({
             success: false,

@@ -25,6 +25,7 @@ import { SubAgentManager } from './sub-agents.js';
 import { OpenRouterClient } from '../integrations/openrouter.js';
 import { WebSearch } from '../integrations/web-search.js';
 import { WorkspaceManager } from './workspace-manager.js';
+import { getTaskTracker } from './task-tracker.js';
 
 const execAsync = promisify(exec);
 
@@ -208,6 +209,198 @@ export class Darwin {
    * Register integration tools with the Brain
    */
   private registerIntegrationTools(): void {
+    // File system tools - allows Darwin to investigate local files
+    this.brain.registerTool(
+      'read_file',
+      'Read the contents of a local file. Use this to investigate logs, progress files, or any file on the system.',
+      {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the file to read' },
+          tail: { type: 'number', description: 'Only read the last N lines (optional, useful for log files)' },
+        },
+        required: ['path'],
+      },
+      async (args) => {
+        const filePath = args.path as string;
+        const tailLines = args.tail as number | undefined;
+
+        this.monologue.act(`Reading: ${filePath}`);
+
+        try {
+          const fs = await import('fs/promises');
+          const content = await fs.readFile(filePath, 'utf-8');
+
+          if (tailLines && tailLines > 0) {
+            const lines = content.split('\n');
+            const lastLines = lines.slice(-tailLines).join('\n');
+            return { content: lastLines, totalLines: lines.length, showing: `last ${tailLines} lines` };
+          }
+
+          // Limit response size for context
+          if (content.length > 10000) {
+            return {
+              content: content.slice(0, 10000),
+              truncated: true,
+              totalSize: content.length,
+              hint: 'File is large. Use tail parameter to read specific sections.'
+            };
+          }
+
+          return { content };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { error: message };
+        }
+      }
+    );
+
+    this.brain.registerTool(
+      'list_dir',
+      'List files and directories in a path. Use this to explore workspaces, find log files, etc.',
+      {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Directory path to list' },
+          recursive: { type: 'boolean', description: 'List recursively (default false, use sparingly)' },
+        },
+        required: ['path'],
+      },
+      async (args) => {
+        const dirPath = args.path as string;
+        const recursive = args.recursive as boolean || false;
+
+        this.monologue.act(`Listing: ${dirPath}`);
+
+        try {
+          const fs = await import('fs/promises');
+          const path = await import('path');
+
+          const entries = await fs.readdir(dirPath, { withFileTypes: true });
+          const result: Array<{ name: string; type: 'file' | 'dir'; size?: number }> = [];
+
+          for (const entry of entries) {
+            const fullPath = path.join(dirPath, entry.name);
+            const type = entry.isDirectory() ? 'dir' : 'file';
+
+            if (entry.isFile()) {
+              try {
+                const stats = await fs.stat(fullPath);
+                result.push({ name: entry.name, type, size: stats.size });
+              } catch {
+                result.push({ name: entry.name, type });
+              }
+            } else {
+              result.push({ name: entry.name, type });
+            }
+          }
+
+          return { path: dirPath, entries: result };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { error: message };
+        }
+      }
+    );
+
+    // Investigation tool - helps Darwin investigate failed tasks
+    this.brain.registerTool(
+      'investigate_task',
+      'Get information about the last failed task including paths to logs, workspace, and suggested commands to investigate. Use this when a task fails and you want to understand what went wrong.',
+      {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+      async () => {
+        const tracker = getTaskTracker();
+        const info = tracker.getInvestigationInfo();
+
+        if (!info) {
+          return { error: 'No failed tasks found in history' };
+        }
+
+        this.monologue.act(`Investigating failed task: ${info.repoName}`);
+        return info;
+      }
+    );
+
+    // Cleanup preserved workspaces after investigation is complete
+    this.brain.registerTool(
+      'cleanup_workspace',
+      'Clean up a preserved workspace after investigation is complete. Use this to free disk space after you have finished investigating a failed task.',
+      {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'The workspace path to clean up' },
+        },
+        required: ['path'],
+      },
+      async (args) => {
+        const workspacePath = args.path as string;
+
+        // Safety check - only allow cleaning up paths in .darwin/workspaces
+        if (!workspacePath.includes('.darwin/workspaces')) {
+          return { error: 'Can only clean up paths within ~/.darwin/workspaces/' };
+        }
+
+        this.monologue.act(`Cleaning up workspace: ${workspacePath}`);
+
+        try {
+          const fs = await import('fs/promises');
+          await fs.rm(workspacePath, { recursive: true, force: true });
+          return { success: true, message: `Cleaned up: ${workspacePath}` };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { error: message };
+        }
+      }
+    );
+
+    this.brain.registerTool(
+      'run_command',
+      'Execute a shell command and return output. Use for investigating system state, running diagnostic commands, checking git status, etc. SAFETY: Only use for read-only diagnostic commands.',
+      {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'The shell command to execute' },
+          cwd: { type: 'string', description: 'Working directory (optional)' },
+          timeout: { type: 'number', description: 'Timeout in seconds (default 30, max 60)' },
+        },
+        required: ['command'],
+      },
+      async (args) => {
+        const command = args.command as string;
+        const cwd = args.cwd as string | undefined;
+        const timeoutSec = Math.min((args.timeout as number) || 30, 60);
+
+        // Safety check - block obviously dangerous commands
+        const dangerous = ['rm -rf', 'mkfs', 'dd if=', ':(){', 'chmod -R 777', '> /dev/'];
+        if (dangerous.some(d => command.includes(d))) {
+          return { error: 'Command blocked for safety. Use only diagnostic commands.' };
+        }
+
+        this.monologue.act(`Running: ${command.slice(0, 50)}...`);
+
+        try {
+          const { stdout, stderr } = await execAsync(command, {
+            cwd,
+            timeout: timeoutSec * 1000,
+            maxBuffer: 1024 * 1024, // 1MB
+          });
+
+          return {
+            stdout: stdout.slice(0, 5000),
+            stderr: stderr.slice(0, 1000),
+            truncated: stdout.length > 5000 || stderr.length > 1000,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { error: message };
+        }
+      }
+    );
+
     // Web search tool
     this.brain.registerTool(
       'web_search',
